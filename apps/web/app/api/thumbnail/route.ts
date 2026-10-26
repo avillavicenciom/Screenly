@@ -11,12 +11,13 @@ import { Policy, Video } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
 import { Effect, Exit } from "effect";
 import type { NextRequest } from "next/server";
+import { privateResourceResponse } from "@/lib/private-resource-response";
 import * as EffectRuntime from "@/lib/server";
 import { runPromise } from "@/lib/server";
 import { decodeStorageVideo } from "@/lib/video-storage";
 import { getHeaders } from "@/utils/helpers";
 
-export async function GET(request: NextRequest) {
+async function getResponse(request: NextRequest) {
 	const { searchParams } = request.nextUrl;
 	const videoId = searchParams.get("videoId");
 	const origin = request.headers.get("origin") as string;
@@ -115,3 +116,12 @@ export async function GET(request: NextRequest) {
 		);
 	}
 }
+
+export async function GET(request: NextRequest) {
+	return privateResourceResponse(
+		await getResponse(request),
+		request.method === "HEAD",
+	);
+}
+
+export const HEAD = GET;

@@ -13,6 +13,7 @@ import { Storage as StorageDomain, Video } from "@cap/web-domain";
 import { Effect, Option } from "effect";
 import type { NextRequest } from "next/server";
 import { isPrivateEditTranscriptObjectKey } from "@/lib/edit-transcript";
+import { privateResourceResponse } from "@/lib/private-resource-response";
 import { runPromise } from "@/lib/server";
 import { CACHE_CONTROL_HEADERS } from "@/utils/helpers";
 
@@ -164,7 +165,7 @@ const getPolicyVideo = (videoId: Video.VideoId) =>
 		return maybeVideo[0];
 	});
 
-export async function GET(request: NextRequest) {
+async function getResponse(request: NextRequest) {
 	const internalDownload =
 		request.headers.get("x-cap-internal-download") === "1";
 	if (internalDownload) {
@@ -304,6 +305,13 @@ export async function GET(request: NextRequest) {
 	} catch (error) {
 		return toProxyErrorResponse(error);
 	}
+}
+
+export async function GET(request: NextRequest) {
+	return privateResourceResponse(
+		await getResponse(request),
+		request.method === "HEAD",
+	);
 }
 
 export const HEAD = GET;

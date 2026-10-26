@@ -112,8 +112,14 @@ vi.mock("@/utils/helpers", async (importOriginal) => ({
 }));
 
 import { GET, HEAD } from "@/app/api/storage/object/route";
-import { GET as thumbnail } from "@/app/api/thumbnail/route";
-import { GET as preview } from "@/app/api/video/preview/route";
+import {
+	GET as thumbnail,
+	HEAD as thumbnailHead,
+} from "@/app/api/thumbnail/route";
+import {
+	GET as preview,
+	HEAD as previewHead,
+} from "@/app/api/video/preview/route";
 
 const profiles = [
 	{ name: "anonymous", user: null, allowed: false },
@@ -145,6 +151,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	state.user = null;
 	state.membership = true;
+	video.public = false;
 	state.lookup.mockResolvedValue([video]);
 	state.read.mockImplementation(() =>
 		Effect.succeed(new Response("private-bytes")),
@@ -302,17 +309,17 @@ describe("signed private link lifecycle: current behavior", () => {
 		expect(response.headers.get("pragma")).toBe("no-cache");
 	});
 
-	it("currently omits cache restrictions on storage redirects", async () => {
+	it("prevents caching storage redirects", async () => {
 		state.user = "owner";
 		state.access.mockReturnValue(
 			Effect.succeed([{ getSignedObjectUrl: state.sign }]),
 		);
 		const response = await signedRequest();
 		expect(response.status).toBe(302);
-		expect(response.headers.get("cache-control")).toBeNull();
+		expectPrivateCache(response);
 	});
 
-	it("currently omits cache restrictions on thumbnail URL responses", async () => {
+	it("prevents caching thumbnail URL responses", async () => {
 		state.user = "owner";
 		const response = await thumbnail(
 			new NextRequest(
@@ -320,10 +327,10 @@ describe("signed private link lifecycle: current behavior", () => {
 			),
 		);
 		expect(response.status).toBe(200);
-		expect(response.headers.get("cache-control")).toBeNull();
+		expectPrivateCache(response);
 	});
 
-	it("currently marks an authorized GIF redirect publicly cacheable for five minutes", async () => {
+	it("prevents caching an authorized GIF redirect", async () => {
 		state.user = "owner";
 		const response = await preview(
 			new NextRequest(
@@ -331,6 +338,116 @@ describe("signed private link lifecycle: current behavior", () => {
 			),
 		);
 		expect(response.status).toBe(302);
-		expect(response.headers.get("cache-control")).toBe("public, max-age=300");
+		expectPrivateCache(response);
 	});
+});
+
+function expectPrivateCache(response: Response) {
+	expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+	expect(response.headers.get("CDN-Cache-Control")).toBe("no-store");
+	expect(response.headers.get("Vercel-CDN-Cache-Control")).toBe("no-store");
+	expect(response.headers.get("Pragma")).toBe("no-cache");
+	expect(response.headers.get("Expires")).toBe("0");
+}
+
+const endpoints = [
+	{
+		name: "preview",
+		get: preview,
+		head: previewHead,
+		path: "/api/video/preview?videoId=private-video",
+		success: 302,
+		denied: 404,
+	},
+	{
+		name: "thumbnail",
+		get: thumbnail,
+		head: thumbnailHead,
+		path: "/api/thumbnail?videoId=private-video",
+		success: 200,
+		denied: 404,
+	},
+	{
+		name: "object",
+		get: GET,
+		head: HEAD,
+		path: "/api/storage/object?videoId=private-video&key=owner/private-video/result.mp4",
+		success: 200,
+		denied: 404,
+	},
+];
+
+describe.each(endpoints)(
+	"private cache response contract: $name",
+	({ get, head, path, success, denied }) => {
+		it.each(["GET", "HEAD"])(
+			"protects authorized %s responses",
+			async (method) => {
+				state.user = "owner";
+				const response = await (method === "HEAD" ? head : get)(
+					new NextRequest(`https://screenly.test${path}`, { method }),
+				);
+				expect(response.status).toBe(success);
+				expectPrivateCache(response);
+				if (method === "HEAD") expect(await response.text()).toBe("");
+			},
+		);
+		it.each(["GET", "HEAD"])("protects denied %s responses", async (method) => {
+			const response = await (method === "HEAD" ? head : get)(
+				new NextRequest(`https://screenly.test${path}`, { method }),
+			);
+			expect(response.status).toBe(denied);
+			expectPrivateCache(response);
+			if (method === "HEAD") expect(await response.text()).toBe("");
+		});
+		it.each(["GET", "HEAD"])(
+			"protects malformed %s responses",
+			async (method) => {
+				const response = await (method === "HEAD" ? head : get)(
+					new NextRequest(`https://screenly.test${path.split("?")[0]}`, {
+						method,
+					}),
+				);
+				expect(response.status).toBe(400);
+				expectPrivateCache(response);
+			},
+		);
+		it.each(["GET", "HEAD"])(
+			"protects storage failures for %s",
+			async (method) => {
+				state.user = "owner";
+				state.access.mockReturnValue(
+					Effect.fail(new Error("Storage unavailable")),
+				);
+				const response = await (method === "HEAD" ? head : get)(
+					new NextRequest(`https://screenly.test${path}`, { method }),
+				);
+				expect(response.status).toBeGreaterThanOrEqual(400);
+				expectPrivateCache(response);
+			},
+		);
+		it("preserves anonymous access to genuinely public videos", async () => {
+			video.public = true;
+			const response = await get(
+				new NextRequest(`https://screenly.test${path}`),
+			);
+			expect(response.status).toBe(success);
+			expectPrivateCache(response);
+		});
+	},
+);
+
+it("keeps the OG fallback redirect uncacheable", async () => {
+	state.user = "owner";
+	state.head.mockReturnValue(Effect.fail(new Error("Missing preview")));
+	const response = await preview(
+		new NextRequest(
+			"https://screenly.test/api/video/preview?videoId=private-video&fallback=og",
+		),
+	);
+	expect(response.status).toBe(302);
+	expect(response.headers.get("location")).toContain(
+		"/api/video/og?videoId=private-video",
+	);
+	expectPrivateCache(response);
 });

@@ -3,6 +3,7 @@ import { Video } from "@cap/web-domain";
 import { Effect, Option } from "effect";
 import { type NextRequest, NextResponse } from "next/server";
 import { ensureLoomPreviewGif } from "@/lib/loom-preview-gif";
+import { privateResourceResponse } from "@/lib/private-resource-response";
 import { runPromise } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
@@ -22,11 +23,10 @@ function getFallbackResponse(request: NextRequest, videoId: string) {
 	const fallbackUrl = new URL("/api/video/og", request.url);
 	fallbackUrl.searchParams.set("videoId", videoId);
 	const response = NextResponse.redirect(fallbackUrl, 302);
-	response.headers.set("Cache-Control", "private, no-store, max-age=0");
 	return response;
 }
 
-export async function GET(request: NextRequest) {
+async function getResponse(request: NextRequest) {
 	const rawVideoId = request.nextUrl.searchParams.get("videoId");
 	if (!rawVideoId) {
 		return new NextResponse(null, { status: 400 });
@@ -71,8 +71,14 @@ export async function GET(request: NextRequest) {
 	}
 
 	const response = NextResponse.redirect(previewUrl, 302);
-	response.headers.set("Cache-Control", "public, max-age=300");
 	return response;
+}
+
+export async function GET(request: NextRequest) {
+	return privateResourceResponse(
+		await getResponse(request),
+		request.method === "HEAD",
+	);
 }
 
 export const HEAD = GET;

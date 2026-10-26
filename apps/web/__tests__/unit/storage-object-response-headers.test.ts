@@ -63,6 +63,7 @@ const upstream = (contentType: string | null, init: ResponseInit = {}) => {
 };
 
 const expectContentHeaders = (response: Response) => {
+	expect(response.headers.get("Cache-Control")).toBe("private, no-store");
 	expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
 	expect(response.headers.get("Content-Security-Policy")).toBe(
 		"sandbox; default-src 'none'",

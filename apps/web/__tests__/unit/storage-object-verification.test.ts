@@ -66,7 +66,11 @@ function request(
 			`https://cap.test/api/storage/object?videoId=video&key=${encodeURIComponent(key)}&token=test`,
 			{ headers },
 		),
-	);
+	).then((response) => {
+		expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+		expect(response.headers.get("Vercel-CDN-Cache-Control")).toBe("no-store");
+		return response;
+	});
 }
 
 describe("recording verification object reads", () => {
