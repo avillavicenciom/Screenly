@@ -422,7 +422,7 @@ describe("Instant playlist readiness API", () => {
 	});
 
 	it.each(["custom", "default"] as const)(
-		"redirects a published MP4 in a %s bucket to its retained storage key",
+		"redirects a published MP4 in a %s bucket to the authorization proxy",
 		async (bucket) => {
 			mocks.defaultBucket = bucket === "default";
 			mocks.source = {
@@ -431,8 +431,9 @@ describe("Instant playlist readiness API", () => {
 			};
 			const response = await request("mp4", "");
 			expect(response.status).toBe(302);
-			expect(mocks.sign).toHaveBeenCalledExactlyOnceWith(
-				mocks.source.outputKey,
+			expect(mocks.sign).not.toHaveBeenCalled();
+			expect(response.headers.get("Location")).toBe(
+				"/api/playback/mp4?videoId=recording",
 			);
 		},
 	);

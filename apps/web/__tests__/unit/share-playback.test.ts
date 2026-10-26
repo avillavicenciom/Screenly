@@ -1,4 +1,4 @@
-import { Effect, Option } from "effect";
+import { Effect } from "effect";
 import { describe, expect, it, vi } from "vitest";
 import { getSharePlaybackUrl } from "@/lib/share-playback";
 
@@ -33,97 +33,41 @@ const video = {
 
 describe("share page playback URL", () => {
 	it.each(["desktopMP4", "webMP4"] as const)(
-		"resolves %s through the existing storage access using the loaded video",
+		"emits a same-origin proxy for %s without signing",
 		async (type) => {
-			mocks.sign.mockReturnValue(
-				Effect.succeed("https://media.example.com/video.mp4"),
-			);
-			mocks.access.mockReturnValue(
-				Effect.succeed([{ getSignedObjectUrl: mocks.sign }, Option.none()]),
-			);
 			expect(await getSharePlaybackUrl({ ...video, source: { type } })).toBe(
-				"https://media.example.com/video.mp4",
+				"/api/playback/mp4?videoId=video",
 			);
-			expect(mocks.access).toHaveBeenCalledOnce();
-			expect(mocks.access.mock.calls[0]?.[0]).toMatchObject({
-				id: "video",
-				ownerId: "owner",
-				bucketId: Option.some("custom-bucket"),
-				source: { type },
-			});
-			expect(mocks.sign).toHaveBeenCalledExactlyOnceWith(
-				"owner/video/result.mp4",
-			);
+			expect(mocks.access).not.toHaveBeenCalled();
+			expect(mocks.sign).not.toHaveBeenCalled();
 		},
 	);
-
-	it("retains the published output key and Google Drive integration for storage resolution", async () => {
-		mocks.sign.mockReturnValue(
-			Effect.succeed("https://media.example.com/output.mp4"),
-		);
-		mocks.access.mockReturnValue(
-			Effect.succeed([{ getSignedObjectUrl: mocks.sign }, Option.none()]),
-		);
-		const publishedVideo = {
-			...video,
-			storageIntegrationId: "drive-integration" as NonNullable<
-				typeof video.storageIntegrationId
-			>,
-			source: {
-				type: "desktopMP4" as const,
-				outputKey: "owner/video/.recording/outputs/generation/result.mp4",
-			},
-		};
-		await getSharePlaybackUrl(publishedVideo);
-		expect(mocks.access.mock.calls[0]?.[0]).toMatchObject({
-			source: publishedVideo.source,
-			storageIntegrationId: Option.some("drive-integration"),
-		});
-		expect(mocks.sign).toHaveBeenCalledExactlyOnceWith(
-			publishedVideo.source.outputKey,
-		);
+	it("keeps the key and provider server-side even for published edits", async () => {
+		expect(
+			await getSharePlaybackUrl({
+				...video,
+				source: {
+					type: "desktopMP4",
+					outputKey: "owner/video/.recording/outputs/edit/result.mp4",
+				},
+			}),
+		).toBe("/api/playback/mp4?videoId=video");
+		expect(mocks.access).not.toHaveBeenCalled();
 	});
-
-	it("signs the audio leveled output when it is the published source", async () => {
-		mocks.sign.mockReturnValue(
-			Effect.succeed("https://media.example.com/audio.mp4"),
-		);
-		mocks.access.mockReturnValue(
-			Effect.succeed([{ getSignedObjectUrl: mocks.sign }, Option.none()]),
-		);
-		const outputKey = "owner/video/.recording/outputs/generation/result.mp4";
-		const audioLevelOutputKey =
-			"owner/video/.recording/outputs/audio-quality-v3/result.mp4";
-		await getSharePlaybackUrl({
-			...video,
-			source: {
-				type: "desktopMP4",
-				outputKey,
-				audioLevelSourceKey: outputKey,
-				audioLevelOutputKey,
-			},
-		});
-		expect(mocks.sign).toHaveBeenCalledExactlyOnceWith(audioLevelOutputKey);
-	});
-
-	it("allows the player to use its existing route when storage resolution fails", async () => {
-		mocks.access.mockReturnValue(Effect.fail(new Error("Storage unavailable")));
-		expect(await getSharePlaybackUrl(video)).toBeNull();
-		expect(mocks.sign).not.toHaveBeenCalled();
-	});
-
-	it("keeps signing defects out of the streamed page", async () => {
-		mocks.access.mockReturnValue(Effect.die(new Error("Signer configuration")));
-		expect(await getSharePlaybackUrl(video)).toBeNull();
-	});
-
-	it("does not resolve storage when the loaded source is invalid", async () => {
+	it.each(["MediaConvert", "local", "desktopSegments"] as const)(
+		"leaves %s to its existing playback path",
+		async (type) => {
+			expect(
+				await getSharePlaybackUrl({ ...video, source: { type } }),
+			).toBeNull();
+		},
+	);
+	it("does not emit a URL for invalid video metadata", async () => {
 		expect(
 			await getSharePlaybackUrl({
 				...video,
 				name: null,
 			} as unknown as typeof video),
 		).toBeNull();
-		expect(mocks.access).not.toHaveBeenCalled();
 	});
 });

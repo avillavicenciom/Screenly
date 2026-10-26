@@ -21,6 +21,7 @@ import {
 	resolveMobileRequestOrigin,
 	resolveMobileWebResourceUrl,
 } from "@/lib/mobile-request-origin";
+import { mp4PlaybackUrl } from "@/lib/mp4-playback";
 import {
 	getEarlySegmentTracks,
 	getSegmentPlaybackState,
@@ -175,12 +176,23 @@ const getPlaylistResponse = (
 	publicOrigin: string,
 ) =>
 	Effect.gen(function* () {
-		const [bucket, customBucket] = yield* Storage.getAccessForVideo(video);
 		const source = Video.Video.getSource(video);
 		const isMp4Source = source instanceof Video.Mp4Source;
 		const mp4Key = isMp4Source
 			? source.getFileKey()
 			: `${video.ownerId}/${video.id}/result.mp4`;
+
+		if (
+			isMp4Source &&
+			Option.isNone(urlParams.fileType) &&
+			(urlParams.videoType === "mp4" || urlParams.videoType === "master")
+		) {
+			return HttpServerResponse.redirect(mp4PlaybackUrl(video.id), {
+				headers: CACHE_CONTROL_HEADERS,
+			});
+		}
+
+		const [bucket, customBucket] = yield* Storage.getAccessForVideo(video);
 
 		if (urlParams.videoType === "raw-preview") {
 			const rawFileKey = yield* resolveRawPreviewKey(video);

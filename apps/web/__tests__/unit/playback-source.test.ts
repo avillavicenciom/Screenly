@@ -101,6 +101,35 @@ describe("canPlayRawContentType", () => {
 });
 
 describe("resolvePlaybackSource", () => {
+	it("probes the relative MP4 proxy without switching to an origin or raw fallback", async () => {
+		const initialUrl = "/api/playback/mp4?videoId=recording";
+		const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
+			createResponse(
+				"https://screenly.example/api/playback/mp4?videoId=recording",
+				{
+					status: 206,
+					headers: { "content-type": "video/mp4" },
+				},
+			),
+		);
+		expect(
+			await resolvePlaybackSource({
+				videoSrc: "/api/playlist?videoId=recording&videoType=mp4",
+				initialUrl,
+				rawFallbackSrc: "/api/playlist?videoType=raw-preview",
+				fetchImpl,
+			}),
+		).toEqual({
+			url: initialUrl,
+			type: "mp4",
+			supportsCrossOrigin: false,
+			fromInitialUrl: true,
+		});
+		expect(fetchImpl).toHaveBeenCalledExactlyOnceWith(initialUrl, {
+			headers: { range: "bytes=0-0" },
+		});
+	});
+
 	it("uses the page's signed URL without a playlist request or changing its signature", async () => {
 		const initialUrl =
 			"https://bucket.s3.amazonaws.com/result.mp4?signature=abc";

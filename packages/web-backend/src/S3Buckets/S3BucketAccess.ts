@@ -161,6 +161,48 @@ export const createS3BucketAccess = Effect.gen(function* () {
 	return {
 		bucketName: provider.bucket,
 		isPathStyle: provider.isPathStyle,
+		getPlaybackObjectResponse: (
+			key: string,
+			range: string | null,
+			options: { signal: AbortSignal; ifMatch?: string },
+		) =>
+			provider.getInternal.pipe(
+				Effect.flatMap((client) =>
+					Effect.tryPromise({
+						try: async () => {
+							try {
+								const result = await client.send(
+									new S3.GetObjectCommand({
+										Bucket: provider.bucket,
+										Key: key,
+										Range: range ?? undefined,
+										IfMatch: options.ifMatch,
+									}),
+									{ abortSignal: options.signal },
+								);
+								const headers = new Headers();
+								if (result.ContentLength !== undefined)
+									headers.set("Content-Length", String(result.ContentLength));
+								if (result.ContentRange)
+									headers.set("Content-Range", result.ContentRange);
+								if (result.ETag) headers.set("ETag", result.ETag);
+								return new Response(
+									result.Body?.transformToWebStream() ?? null,
+									{ status: result.$metadata.httpStatusCode ?? 200, headers },
+								);
+							} catch (error) {
+								if (
+									error instanceof S3.S3ServiceException &&
+									error.$metadata.httpStatusCode === 416
+								)
+									return new Response(null, { status: 416 });
+								throw error;
+							}
+						},
+						catch: (cause) => new S3Error({ cause }),
+					}),
+				),
+			),
 		getSignedObjectUrl: (
 			key: string,
 			signingArgs?: RequestPresigningArguments,
