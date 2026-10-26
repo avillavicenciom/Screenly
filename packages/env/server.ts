@@ -214,6 +214,13 @@ function createServerEnv() {
 			DUB_API_KEY: z.string().optional(),
 
 			/// Media Server
+			MEDIA_INTERNAL_CAPABILITY_SECRET: z
+				.string()
+				.min(32)
+				.optional()
+				.describe(
+					"Dedicated processing capability signing key shared with the media server; independent from viewer and legacy webhook secrets",
+				),
 			MEDIA_SERVER_URL: z
 				.string()
 				.optional()

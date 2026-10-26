@@ -1,4 +1,6 @@
 import { serverEnv } from "@cap/env";
+import { createMediaCapability } from "../../media-server/src/lib/media-capability";
+import type { MediaJob } from "../../media-server/src/lib/media-capability-contract";
 
 interface MediaServerError {
 	error: string;
@@ -54,7 +56,7 @@ function getMediaServerHeaders(
 
 async function fetchWithRetry(
 	url: string,
-	options: RequestInit,
+	options: RequestInit | (() => Promise<RequestInit>),
 	retryOptions: FetchRetryOptions = {},
 ): Promise<Response> {
 	let lastError: Error | undefined;
@@ -63,14 +65,17 @@ async function fetchWithRetry(
 		retryOptions.retryableStatuses ?? DEFAULT_RETRYABLE_STATUSES;
 
 	for (let attempt = 0; attempt <= maxRetries; attempt++) {
+		const requestOptions =
+			typeof options === "function" ? await options() : options;
 		try {
-			const response = await fetch(url, options);
+			const response = await fetch(url, requestOptions);
 
 			if (!isRetryableStatus(response.status, retryableStatuses)) {
 				return response;
 			}
 
 			if (attempt < maxRetries) {
+				await response.body?.cancel();
 				const delay = INITIAL_RETRY_DELAY_MS * 2 ** attempt;
 				console.log(
 					`[media-client] Got ${response.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`,
@@ -142,17 +147,45 @@ export async function checkHasAudioTrackViaMediaServer(
 
 export async function extractAudioViaMediaServer(
 	videoUrl: string,
+	authorization?: { job: MediaJob; authorize: () => Promise<void> },
 ): Promise<Buffer> {
 	const { mediaServerUrl, mediaServerSecret } = getMediaServerConfig();
 
-	const response = await fetchWithRetry(`${mediaServerUrl}/audio/extract`, {
-		method: "POST",
-		headers: getMediaServerHeaders(mediaServerSecret),
-		body: JSON.stringify({
-			videoUrl,
-			stream: true,
-		}),
-	});
+	const capabilityKey = serverEnv().MEDIA_INTERNAL_CAPABILITY_SECRET;
+	const options = async (): Promise<RequestInit> => {
+		if (capabilityKey && authorization) {
+			await authorization.authorize();
+			return {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"x-screenly-media-capability": createMediaCapability(
+						authorization.job,
+						videoUrl,
+						capabilityKey,
+					),
+				},
+				body: JSON.stringify({
+					videoUrl,
+					stream: true,
+					job: authorization.job,
+				}),
+				redirect: "error",
+			};
+		}
+		return {
+			method: "POST",
+			headers: getMediaServerHeaders(mediaServerSecret),
+			body: JSON.stringify({
+				videoUrl,
+				stream: true,
+			}),
+		};
+	};
+	const response = await fetchWithRetry(
+		`${mediaServerUrl}/audio/extract`,
+		options,
+	);
 
 	if (!response.ok) {
 		let errorData: MediaServerError;

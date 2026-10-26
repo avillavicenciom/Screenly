@@ -49,6 +49,7 @@ import {
 } from "@/lib/media-client";
 import { planSegmentsAudioExtraction } from "@/lib/segments-audio";
 import { downloadConcatenatedSegments } from "@/lib/segments-audio-download";
+import { authorizeTranscriptionExtraction } from "@/lib/transcription-media-authorization";
 import { decodeStorageVideo } from "@/lib/video-storage";
 import { runWorkflowPromise } from "@/lib/workflow-runtime";
 
@@ -569,7 +570,20 @@ async function extractAudio(
 			return null;
 		}
 
-		audioBuffer = await extractAudioViaMediaServer(videoUrl);
+		audioBuffer = await extractAudioViaMediaServer(
+			videoUrl,
+			tempAudioFilename === "audio-temp.mp3"
+				? {
+						job: {
+							jobId: `transcribe:${video.id}`,
+							attemptId: randomUUID(),
+							videoId: video.id,
+							ownerId: video.ownerId,
+						},
+						authorize: () => authorizeTranscriptionExtraction(video),
+					}
+				: undefined,
+		);
 	} else {
 		hasAudio = await checkHasAudioTrack(videoUrl);
 		console.log(

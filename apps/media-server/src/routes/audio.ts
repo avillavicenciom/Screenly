@@ -16,6 +16,8 @@ import {
 	extractAudioStream,
 	getActiveAudioOperationCount as getActiveProcessCount,
 } from "../lib/media-audio";
+import { verifyMediaCapability } from "../lib/media-capability";
+import { mediaJobSchema } from "../lib/media-capability-contract";
 
 const audio = new Hono();
 const MEDIA_ENGINE_ERROR_CODE = ["FF", "MPEG_ERROR"].join("");
@@ -27,6 +29,7 @@ const videoUrlSchema = z.object({
 const extractSchema = z.object({
 	videoUrl: z.string().url(),
 	stream: z.boolean().optional().default(true),
+	job: mediaJobSchema.optional(),
 });
 
 const convertSchema = z.object({
@@ -126,12 +129,29 @@ audio.post("/check", async (c) => {
 });
 
 audio.post("/extract", async (c) => {
-	if (!validateMediaServerSecret(c)) {
+	const capability = c.req.header("x-screenly-media-capability");
+	if (capability === undefined && !validateMediaServerSecret(c)) {
 		return c.json({ error: "Unauthorized" }, 401);
 	}
 
-	const body = await c.req.json();
+	const body = await c.req.json().catch(() => null);
 	const result = extractSchema.safeParse(body);
+	if (
+		capability !== undefined &&
+		(!result.success ||
+			!result.data.job ||
+			!verifyMediaCapability(
+				capability,
+				process.env.MEDIA_INTERNAL_CAPABILITY_SECRET ?? "",
+				{
+					job: result.data.job,
+					videoUrl: result.data.videoUrl,
+					method: c.req.method,
+					path: c.req.path,
+				},
+			))
+	)
+		return c.json({ error: "Unauthorized" }, 401);
 
 	if (!result.success) {
 		return c.json(
