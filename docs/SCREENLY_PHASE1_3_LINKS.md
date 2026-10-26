@@ -1,5 +1,8 @@
 # Fase 1.3 — enlaces privados, caducidad y caché
 
+Estado histórico: la Fase 1.4 corrige los huecos de caché descritos aquí; ver
+`SCREENLY_PHASE1_4_CACHE.md`. La limitación de revocación de enlaces permanece.
+
 Revisión y pruebas aisladas del 26 de octubre de 2026. Sin modificar lógica de
 aplicación, aplicar migraciones, conectar MySQL/S3/MinIO, desplegar, iniciar
 servicios o cambiar el estado del PR #1. No certifica privacidad en producción.
