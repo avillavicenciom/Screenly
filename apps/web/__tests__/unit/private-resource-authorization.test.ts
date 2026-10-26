@@ -1,3 +1,7 @@
+import {
+	createStorageObjectToken,
+	verifyStorageObjectToken,
+} from "@cap/web-backend/src/Storage/SignedObject";
 import { buildCanViewLoaded } from "@cap/web-backend/src/Videos/VideosPolicy";
 import {
 	CurrentUser,
@@ -8,10 +12,11 @@ import {
 } from "@cap/web-domain";
 import { Effect, Option } from "effect";
 import { NextRequest } from "next/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({
 	user: null as string | null,
+	membership: true,
 	read: vi.fn(),
 	head: vi.fn(),
 	sign: vi.fn(),
@@ -37,7 +42,9 @@ function viewingPolicy() {
 			orgsRepo: {
 				membershipForVideo: (id) =>
 					Effect.succeed(
-						id === "member" ? [{ membershipId: "membership" }] : [],
+						id === "member" && state.membership
+							? [{ membershipId: "membership" }]
+							: [],
 					),
 				allowedEmailDomain: () => Effect.succeed(Option.none()),
 			},
@@ -79,10 +86,10 @@ vi.mock("@cap/web-backend", () => ({
 			),
 	}),
 	VideosRepo: Effect.succeed({
-		getById: () => Effect.die("Unexpected token bypass"),
+		getById: () => Effect.succeed(Option.some([video])),
 	}),
 	Storage: { getAccessForVideo: state.access },
-	verifyStorageObjectToken: () => null,
+	verifyStorageObjectToken,
 	findScreenshotObjectKey: () =>
 		"owner/private-video/screenshot/screen-capture.jpg",
 }));
@@ -93,13 +100,20 @@ vi.mock("@/lib/server", () => ({
 vi.mock("@/lib/video-storage", () => ({
 	decodeStorageVideo: (value: unknown) => value,
 }));
-vi.mock("@/utils/helpers", () => ({
-	CACHE_CONTROL_HEADERS: {},
-	getHeaders: () => ({}),
+vi.mock("@cap/env", () => ({
+	serverEnv: () => ({ NEXTAUTH_SECRET: "isolated-test-signing-secret" }),
+	buildEnv: { NEXT_PUBLIC_WEB_URL: "https://screenly.test" },
+}));
+vi.mock("@/lib/loom-preview-gif", () => ({
+	ensureLoomPreviewGif: () => Effect.succeed(false),
+}));
+vi.mock("@/utils/helpers", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@/utils/helpers")>()),
 }));
 
 import { GET, HEAD } from "@/app/api/storage/object/route";
 import { GET as thumbnail } from "@/app/api/thumbnail/route";
+import { GET as preview } from "@/app/api/video/preview/route";
 
 const profiles = [
 	{ name: "anonymous", user: null, allowed: false },
@@ -130,6 +144,7 @@ const resources = [
 beforeEach(() => {
 	vi.clearAllMocks();
 	state.user = null;
+	state.membership = true;
 	state.lookup.mockResolvedValue([video]);
 	state.read.mockImplementation(() =>
 		Effect.succeed(new Response("private-bytes")),
@@ -200,3 +215,122 @@ describe.each(profiles)(
 		});
 	},
 );
+
+afterEach(() => vi.useRealTimers());
+
+const objectKey = "owner/private-video/result.mp4";
+const signedRequest = (
+	token?: string,
+	key = objectKey,
+	videoId = "private-video",
+) =>
+	GET(
+		new NextRequest(
+			`https://screenly.test/api/storage/object?${new URLSearchParams({ videoId, key, ...(token ? { token } : {}) })}`,
+		),
+	);
+
+describe("signed private link lifecycle: current behavior", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-10-26T12:00:00Z"));
+	});
+
+	it("expires the default token after one hour", () => {
+		const token = createStorageObjectToken({
+			videoId: video.id,
+			key: objectKey,
+		});
+		vi.advanceTimersByTime(3_599_999);
+		expect(verifyStorageObjectToken(token)).not.toBeNull();
+		vi.advanceTimersByTime(2);
+		expect(verifyStorageObjectToken(token)).toBeNull();
+	});
+
+	it("currently accepts the exact expiration millisecond", () => {
+		const token = createStorageObjectToken(
+			{ videoId: video.id, key: objectKey },
+			1,
+		);
+		vi.advanceTimersByTime(1000);
+		expect(verifyStorageObjectToken(token)).not.toBeNull();
+	});
+
+	it("rejects a modified signature", async () => {
+		const token = createStorageObjectToken({
+			videoId: video.id,
+			key: objectKey,
+		});
+		expect((await signedRequest(`${token}invalid`)).status).toBe(404);
+		expect(state.read).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		{ key: "owner/private-video/transcription.vtt", id: "private-video" },
+		{ key: "owner/other-video/result.mp4", id: "other-video" },
+	])(
+		"does not authorize a different key or identifier: $key",
+		async ({ key, id }) => {
+			const token = createStorageObjectToken({
+				videoId: video.id,
+				key: objectKey,
+			});
+			expect((await signedRequest(token, key, id)).status).toBe(404);
+			expect(state.read).not.toHaveBeenCalled();
+		},
+	);
+
+	it("revokes session access but an old valid bearer link still reads bytes", async () => {
+		state.user = "member";
+		expect((await signedRequest()).status).toBe(200);
+		const token = createStorageObjectToken({
+			videoId: video.id,
+			key: objectKey,
+		});
+		state.membership = false;
+		expect((await signedRequest()).status).toBe(404);
+		state.user = null;
+		expect((await signedRequest(token)).status).toBe(200);
+		vi.advanceTimersByTime(3_600_001);
+		expect((await signedRequest(token)).status).toBe(404);
+	});
+
+	it("instructs compliant caches not to store proxied bytes", async () => {
+		state.user = "owner";
+		const response = await signedRequest();
+		expect(response.headers.get("cache-control")).toContain("no-store");
+		expect(response.headers.get("pragma")).toBe("no-cache");
+	});
+
+	it("currently omits cache restrictions on storage redirects", async () => {
+		state.user = "owner";
+		state.access.mockReturnValue(
+			Effect.succeed([{ getSignedObjectUrl: state.sign }]),
+		);
+		const response = await signedRequest();
+		expect(response.status).toBe(302);
+		expect(response.headers.get("cache-control")).toBeNull();
+	});
+
+	it("currently omits cache restrictions on thumbnail URL responses", async () => {
+		state.user = "owner";
+		const response = await thumbnail(
+			new NextRequest(
+				"https://screenly.test/api/thumbnail?videoId=private-video",
+			),
+		);
+		expect(response.status).toBe(200);
+		expect(response.headers.get("cache-control")).toBeNull();
+	});
+
+	it("currently marks an authorized GIF redirect publicly cacheable for five minutes", async () => {
+		state.user = "owner";
+		const response = await preview(
+			new NextRequest(
+				"https://screenly.test/api/video/preview?videoId=private-video",
+			),
+		);
+		expect(response.status).toBe(302);
+		expect(response.headers.get("cache-control")).toBe("public, max-age=300");
+	});
+});

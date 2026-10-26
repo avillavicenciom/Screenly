@@ -84,6 +84,11 @@ describe("getRequestAccessibleS3Endpoint", () => {
 				port: "9000",
 			});
 			expect(signedUrl).toContain("X-Amz-Signature=");
+			expect(new URL(signedUrl).searchParams.get("X-Amz-Expires")).toBe("3600");
+			const shortUrl = await Effect.runPromise(
+				access.getSignedObjectUrl("video/video.mp4", { expiresIn: 60 }),
+			);
+			expect(new URL(shortUrl).searchParams.get("X-Amz-Expires")).toBe("60");
 		} finally {
 			client.destroy();
 		}
