@@ -916,7 +916,9 @@ describe("recording storage lifecycle", () => {
 		expect(database.rows.get("duplicate-video")).toMatchObject({
 			source: { type: "desktopMP4" },
 			metadata: { sourceName: "Test display" },
+			public: false,
 		});
+		expect(database.rows.get("owned-video")?.public).toBe(true);
 		expect(database.rows.get("duplicate-video")?.metadata).not.toHaveProperty(
 			"desktopRecordingUpload",
 		);

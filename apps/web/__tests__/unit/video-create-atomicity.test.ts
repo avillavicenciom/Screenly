@@ -279,6 +279,14 @@ describe("video creation for server processing", () => {
 });
 
 describe("VideosRepo.create", () => {
+	it("creates privately even when a caller passes public visibility", async () => {
+		const id = await createRepoVideo();
+		expect(mocks.store.videos.get(id)).toMatchObject({
+			ownerId: "fixture-user",
+			public: false,
+		});
+	});
+
 	it("commits a video and optional upload row together", async () => {
 		const id = await createRepoVideo({ mode: "singlepart", total: 123 });
 		expect(id).toBe("fixture-video");

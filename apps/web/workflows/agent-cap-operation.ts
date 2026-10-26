@@ -188,7 +188,7 @@ async function createDuplicate(operationId: string, payload: OperationPayload) {
 				height: snapshot.height,
 				fps: snapshot.fps,
 				metadata: snapshot.metadata,
-				public: snapshot.public,
+				public: false,
 				settings: snapshot.settings,
 				transcriptionStatus: snapshot.transcriptionStatus as
 					| "PROCESSING"

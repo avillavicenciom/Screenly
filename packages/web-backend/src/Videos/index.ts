@@ -444,7 +444,7 @@ export class Videos extends Effect.Service<Videos>()("Videos", {
 							ownerId: video.ownerId,
 							orgId: video.orgId,
 							name: video.name,
-							public: video.public,
+							public: false,
 							source:
 								publishedKeys.size > 0
 									? {
