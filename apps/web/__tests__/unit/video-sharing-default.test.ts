@@ -31,11 +31,11 @@ describe("new recording visibility", () => {
 		lookup.serverDefaultPublic = true;
 	});
 
-	it("keeps the current server default for organizations that have not opted in", async () => {
+	it("starts recordings private even when the legacy server default is public", async () => {
 		lookup.limit.mockResolvedValue([
 			{ defaultVideoVisibility: null, tombstoneAt: null },
 		]);
-		expect(await getNewVideoPublic(ORGANIZATION_ID)).toBe(true);
+		expect(await getNewVideoPublic(ORGANIZATION_ID)).toBe(false);
 
 		lookup.serverDefaultPublic = false;
 		expect(await getNewVideoPublic(ORGANIZATION_ID)).toBe(false);
@@ -48,7 +48,23 @@ describe("new recording visibility", () => {
 		expect(await getNewVideoPublic(ORGANIZATION_ID)).toBe(false);
 	});
 
-	it("rejects a missing or deleted organization", async () => {
+	it("rejects a deleted organization", async () => {
+		lookup.limit.mockResolvedValue([
+			{ defaultVideoVisibility: null, tombstoneAt: new Date() },
+		]);
+		await expect(getNewVideoPublic(ORGANIZATION_ID)).rejects.toThrow(
+			"Organization not found",
+		);
+	});
+
+	it("propagates lookup failures", async () => {
+		lookup.limit.mockRejectedValue(new Error("Database unavailable"));
+		await expect(getNewVideoPublic(ORGANIZATION_ID)).rejects.toThrow(
+			"Database unavailable",
+		);
+	});
+
+	it("rejects a missing organization", async () => {
 		lookup.limit.mockResolvedValue([]);
 		await expect(getNewVideoPublic(ORGANIZATION_ID)).rejects.toThrow(
 			"Organization not found",
