@@ -302,6 +302,18 @@ describe("signed private link lifecycle: current behavior", () => {
 		expect((await signedRequest(token)).status).toBe(404);
 	});
 
+	it("retains an old bearer capability after a public video becomes private", async () => {
+		video.public = true;
+		expect((await signedRequest()).status).toBe(200);
+		const token = createStorageObjectToken({
+			videoId: video.id,
+			key: objectKey,
+		});
+		video.public = false;
+		expect((await signedRequest()).status).toBe(404);
+		expect((await signedRequest(token)).status).toBe(200);
+	});
+
 	it("instructs compliant caches not to store proxied bytes", async () => {
 		state.user = "owner";
 		const response = await signedRequest();
