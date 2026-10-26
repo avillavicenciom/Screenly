@@ -64,3 +64,38 @@ Próxima tarea propuesta: probar que un vídeo privado nuevo no expone metadatos
 miniaturas, MP4/HLS ni transcript a un anónimo, y que propietario y destinatarios
 autorizados mantienen acceso. Separar esos cambios por endpoint y conservar el
 comportamiento de publicación explícita.
+
+## Segundo incremento: autorización en endpoints
+
+Se añade una matriz de cuatro perfiles: anónimo, propietario, miembro autorizado
+por una compartición de organización y usuario autenticado sin permiso. La
+política real `buildCanViewLoaded` decide; no se sustituye por un booleano que
+repita el resultado esperado. Sesiones, repositorios y storage son fixtures.
+
+- `/api/storage/object`: GET de MP4, bytes de miniatura, manifest HLS, segmento
+  HLS y VTT; HEAD de MP4. Se exige 404 sin leer, consultar metadatos de storage
+  ni firmar URLs para los dos perfiles sin acceso; propietario/miembro reciben
+  200 y los bytes esperados.
+- `/api/thumbnail`: emisión de URL firmada solo tras política aprobada. Una
+  denegación no consulta la fila del vídeo ni firma objetos.
+- `/api/playlist`: master, vídeo y audio HLS. La denegación devuelve 401 sin
+  leer el manifest almacenado ni firmar segmentos; los autorizados reciben 200
+  con contenido M3U8.
+
+Los tests llaman los handlers HTTP reales sin escuchar puertos. En el límite
+`Videos.getByIdForViewing` el fixture aplica la política real con repositorios
+simulados: no valida la implementación completa del servicio ni la sesión real.
+La batería conjunta de políticas, descargas, objetos, thumbnails y playlists
+aprobó 170 pruebas en siete archivos. La matriz añade 32 casos (28 de recursos y
+cuatro parametrizados de playlists, cada uno recorre tres playlists).
+El typecheck completo y Biome de los dos archivos de pruebas aprobaron; el
+Markdown se verificó con Prettier.
+
+No se ha cambiado lógica de aplicación. Quedan pendientes E2E, S3/CDN reales,
+revocación/caché y todos los endpoints alternativos. Estos casos simulan solicitudes
+sin tokens firmados válidos: una URL firmada es una credencial bearer y merece
+pruebas separadas de alcance, caducidad y revocación. El VTT visible y el transcript
+editable privado son recursos distintos; los tests existentes mantienen el rechazo
+del JSON editable en el proxy genérico.
+
+No se aplica la migración, no se despliega ni se certifica privacidad en producción.
