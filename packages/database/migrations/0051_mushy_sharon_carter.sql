@@ -1,0 +1,1 @@
+ALTER TABLE `videos` MODIFY COLUMN `public` boolean NOT NULL DEFAULT false;

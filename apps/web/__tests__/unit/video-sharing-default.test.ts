@@ -1,3 +1,4 @@
+import { videos } from "@cap/database/schema";
 import { getNewVideoPublic } from "@cap/database/video-sharing-default";
 import type { Organisation } from "@cap/web-domain";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,6 +27,10 @@ vi.mock("@cap/env", () => ({
 const ORGANIZATION_ID = "org-1" as Organisation.OrganisationId;
 
 describe("new recording visibility", () => {
+	it("defaults to private when an insert omits visibility", () => {
+		expect(videos.public.default).toBe(false);
+	});
+
 	beforeEach(() => {
 		lookup.limit.mockReset();
 		lookup.serverDefaultPublic = true;
