@@ -21,6 +21,7 @@ vi.mock("@cap/env", () => ({
 const state = vi.hoisted(() => ({
 	user: null as string | null,
 	member: true,
+	viewerGrant: false,
 	exists: true,
 	databaseFails: false,
 	deletedOrganization: false,
@@ -60,7 +61,8 @@ function load(id: string) {
 		{
 			repo: {
 				getById: () => Effect.die("Unexpected lookup"),
-				hasViewerGrant: () => Effect.succeed(false),
+				hasViewerGrant: (_id, email) =>
+					Effect.succeed(email === "viewer@test.invalid" && state.viewerGrant),
 			},
 			orgsRepo: {
 				membershipForVideo: (user) =>
@@ -156,6 +158,10 @@ function expectNoStorage() {
 }
 function expectPrivate(response: Response) {
 	expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+	expect(response.headers.get("CDN-Cache-Control")).toBe("no-store");
+	expect(response.headers.get("Vercel-CDN-Cache-Control")).toBe("no-store");
+	expect(response.headers.get("Pragma")).toBe("no-cache");
+	expect(response.headers.get("Expires")).toBe("0");
 	expect(response.headers.get("Location")).toBeNull();
 }
 beforeEach(() => {
@@ -163,6 +169,7 @@ beforeEach(() => {
 	Object.assign(state, {
 		user: "owner",
 		member: true,
+		viewerGrant: false,
 		exists: true,
 		databaseFails: false,
 		deletedOrganization: false,
@@ -210,6 +217,44 @@ beforeEach(() => {
 	);
 });
 
+const retrievals: {
+	name: string;
+	method: "GET" | "HEAD";
+	headers: Record<string, string>;
+	status: number;
+	body: string;
+}[] = [
+	{
+		name: "GET",
+		method: "GET",
+		headers: {},
+		status: 200,
+		body: "0123456789",
+	},
+	{ name: "HEAD", method: "HEAD", headers: {}, status: 200, body: "" },
+	{
+		name: "Range",
+		method: "GET",
+		headers: { Range: "bytes=2-4" },
+		status: 206,
+		body: "234",
+	},
+	{
+		name: "matching If-Range",
+		method: "GET",
+		headers: { Range: "bytes=2-4", "If-Range": '"v1"' },
+		status: 206,
+		body: "234",
+	},
+	{
+		name: "stale If-Range",
+		method: "GET",
+		headers: { Range: "bytes=2-4", "If-Range": '"old"' },
+		status: 200,
+		body: "0123456789",
+	},
+];
+
 describe("MP4 admission and revocation", () => {
 	it.each(["owner", "member"])(
 		"streams for %s without any origin URL",
@@ -243,33 +288,91 @@ describe("MP4 admission and revocation", () => {
 			expectNoStorage();
 		},
 	);
-	it("revokes the next Range after membership removal", async () => {
+	describe.each(["membership", "viewer grant", "public access", "password"])(
+		"after revoking %s",
+		(reason) => {
+			it.each(retrievals)(
+				"reauthorizes $name before storage IO",
+				async (read) => {
+					state.user = reason === "viewer grant" ? "viewer" : "member";
+					state.viewerGrant = reason === "viewer grant";
+					if (reason === "public access") {
+						state.user = null;
+						video = Video.Video.make({ ...video, public: true });
+					}
+					if (reason === "password") {
+						state.password = "old-hash";
+						state.verified = ["old-hash"];
+					}
+					const admitted = await request(read.headers, read.method);
+					expect(admitted.status).toBe(read.status);
+					expectPrivate(admitted);
+					const downloaded = await admitted.text();
+					expect(downloaded).toBe(read.body);
+					if (reason === "membership") state.member = false;
+					if (reason === "viewer grant") state.viewerGrant = false;
+					if (reason === "public access")
+						video = Video.Video.make({ ...video, public: false });
+					if (reason === "password") state.password = "new-hash";
+					vi.clearAllMocks();
+					const denied = await request(read.headers, read.method);
+					expect(denied.status).toBe(404);
+					expectPrivate(denied);
+					expect(await denied.text()).toBe("");
+					expect(downloaded).toBe(read.body);
+					expectNoStorage();
+				},
+			);
+		},
+	);
+	it("denies new reads without retracting bytes from an already admitted stream", async () => {
 		state.user = "member";
+		let upstream: ReadableStreamDefaultController<Uint8Array> | undefined;
+		const cancel = vi.fn();
+		state.read.mockReturnValue(
+			Effect.succeed(
+				new Response(
+					new ReadableStream<Uint8Array>(
+						{
+							start(controller) {
+								upstream = controller;
+							},
+							cancel,
+						},
+						{ highWaterMark: 0 },
+					),
+					{ headers: { "Content-Length": "10" } },
+				),
+			),
+		);
 		const admitted = await request();
-		state.member = false;
-		expect(await admitted.text()).toBe("0123456789");
-		vi.clearAllMocks();
-		expect((await request({ Range: "bytes=2-4" })).status).toBe(404);
-		expectNoStorage();
-	});
-	it("rechecks public to private on the next request", async () => {
-		state.user = null;
-		video = Video.Video.make({ ...video, public: true });
-		expect((await request()).status).toBe(200);
-		video = Video.Video.make({ ...video, public: false });
-		vi.clearAllMocks();
-		expect((await request()).status).toBe(404);
-		expectNoStorage();
-	});
-	it("rechecks changed passwords for a member", async () => {
-		state.user = "member";
-		state.password = "old-hash";
-		state.verified = ["old-hash"];
-		expect((await request()).status).toBe(200);
-		state.password = "new-hash";
-		vi.clearAllMocks();
-		expect((await request()).status).toBe(404);
-		expectNoStorage();
+		expect(admitted.status).toBe(200);
+		expectPrivate(admitted);
+		const reader = admitted.body?.getReader();
+		if (!reader || !upstream) throw new Error("Missing admitted stream");
+		try {
+			upstream.enqueue(new TextEncoder().encode("01234"));
+			const downloaded = await reader.read();
+			expect(new TextDecoder().decode(downloaded.value)).toBe("01234");
+			state.member = false;
+			vi.clearAllMocks();
+			const denied = await request({ Range: "bytes=5-9" });
+			expect(denied.status).toBe(404);
+			expectPrivate(denied);
+			expect(await denied.text()).toBe("");
+			expectNoStorage();
+			upstream.enqueue(new TextEncoder().encode("56789"));
+			upstream.close();
+			expect(new TextDecoder().decode((await reader.read()).value)).toBe(
+				"56789",
+			);
+			expect((await reader.read()).done).toBe(true);
+			expect(new TextDecoder().decode(downloaded.value)).toBe("01234");
+			expect(cancel).not.toHaveBeenCalled();
+		} finally {
+			await reader.cancel();
+			reader.releaseLock();
+		}
 	});
 	it.each(["deleted", "other-id", "db", "organization", "key"])(
 		"fails closed for %s",
