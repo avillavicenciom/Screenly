@@ -11,8 +11,9 @@ const mocks = vi.hoisted(() => ({
 	denied: false,
 	profile: undefined as string | null | undefined,
 	defaultBucket: false,
+	legacyObjects: [] as { Key: string; Size: number }[],
 	source: { type: "desktopSegments" } as {
-		type: "desktopSegments" | "desktopMP4";
+		type: "desktopSegments" | "desktopMP4" | "MediaConvert";
 		outputKey?: string;
 	},
 	sign: vi.fn(),
@@ -55,13 +56,29 @@ vi.mock("@cap/web-backend", async (importOriginal) => {
 				mocks.sign(key);
 				return `https://media.example.com/${key}`;
 			}),
+		headObject: () =>
+			Effect.succeed({
+				ContentLength: 128,
+				Metadata: {
+					duration: "3",
+					bandwidth: "2000000",
+					resolution: "1920x1080",
+				},
+			}),
 		listObjects: ({ prefix }: { prefix: string }) =>
 			mocks.storageUnavailable
 				? Effect.fail(
 						new StorageDomain.StorageError({ cause: "storage unavailable" }),
 					)
 				: Effect.succeed({
-						Contents: mocks.audioInitExists ? [{ Key: prefix, Size: 764 }] : [],
+						Contents:
+							mocks.legacyObjects.length > 0
+								? mocks.legacyObjects.filter((object) =>
+										object.Key.startsWith(prefix),
+									)
+								: mocks.audioInitExists
+									? [{ Key: prefix, Size: 764 }]
+									: [],
 					}),
 	};
 	return {
@@ -187,6 +204,7 @@ describe("Instant playlist readiness API", () => {
 		mocks.denied = false;
 		mocks.profile = undefined;
 		mocks.defaultBucket = false;
+		mocks.legacyObjects = [];
 		mocks.source = { type: "desktopSegments" };
 	});
 	afterAll(() => mocks.dispose());
@@ -455,6 +473,24 @@ describe("Instant playlist readiness API", () => {
 			expect(response.headers.get("Location")).toBe(
 				"/api/playback/mp4?videoId=recording",
 			);
+		},
+	);
+	it.each([
+		"owner/recording/video/segment_001.ts",
+		"owner/recording/video/abandoned.tmp",
+	])(
+		"characterizes legacy custom HLS listing without publication evidence: %s",
+		async (key) => {
+			mocks.source = { type: "MediaConvert" };
+			mocks.legacyObjects = [{ Key: key, Size: 128 }];
+			mocks.manifest = { is_complete: false, video_segments: [] };
+			const response = await request("video", "");
+			expect(response.status).toBe(200);
+			expect(await response.text()).toContain(
+				`https://media.example.com/${key}`,
+			);
+			expect(mocks.sign).toHaveBeenCalledWith(key);
+			expect(mocks.read).not.toHaveBeenCalled();
 		},
 	);
 });
