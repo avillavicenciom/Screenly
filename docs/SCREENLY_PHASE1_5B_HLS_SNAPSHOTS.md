@@ -137,6 +137,19 @@ No hay nuevas dependencias, lockfiles, endpoints, servicios iniciados ni cambios
 de permisos, esquema, migraciones, workers, captura o infraestructura. No se
 invocan almacenamiento real, IA de pago, VPS o E2E.
 
+## Corrección de limpieza tras auditoría
+
+Se detectó que releaseLock estaba encadenado a la resolución de reader.cancel.
+Si el adaptador dejaba pendiente su cancelación, la operación devolvía aborted
+pero el body conservaba el lock. Se separan ambas acciones: se solicita cancelar
+con rechazo manejado y se libera inmediatamente el lock, sin esperar al proveedor.
+La cancelación no garantiza por sí sola que un socket de un adaptador defectuoso
+termine; sí evita retener el bloqueo local por esperar su confirmación.
+
+Dos regresiones comprueban cancelación que nunca resuelve tras contenido inválido
+y abort durante reader.read pendiente. Antes: 42 casos pasan y esos dos fallan;
+después: los 44 casos del motor pasan. No se conecta el motor a producción.
+
 ## Riesgos pendientes y siguiente paso recomendado
 
 Un SHA256 correcto demuestra igualdad con la declaración validada, no que el
