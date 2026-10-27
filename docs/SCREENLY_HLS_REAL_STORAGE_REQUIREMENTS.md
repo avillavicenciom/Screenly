@@ -1,5 +1,11 @@
 # Requisitos de entorno para validar HLS con almacenamiento real
 
+**Actualización posterior (2026-10-27):** ya se verificaron dos muestras Drive
+con nueve casos reales de adaptador/motor; véase
+[SCREENLY_HLS_DRIVE_LIVE_VALIDATION.md](SCREENLY_HLS_DRIVE_LIVE_VALIDATION.md).
+S3/MinIO, MySQL y E2E siguen pendientes. El diagnóstico siguiente corresponde
+a la preparación previa a la entrega de credenciales y muestras.
+
 **Estado: preparado el procedimiento; ejecución real bloqueada por falta de
 recursos y credenciales de pruebas.** El usuario confirma que todavía no dispone
 del entorno y solicita preparar sus requisitos. No se provisiona nada en esta

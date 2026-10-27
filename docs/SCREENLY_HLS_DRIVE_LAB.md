@@ -4,6 +4,11 @@ Fecha: 2026-10-27. Rama `feature/screenly-phase-0`, base `94fda0f0f`.
 Continuación de `SCREENLY_HLS_REAL_STORAGE_REQUIREMENTS.md`; su diagnóstico de
 ausencia de credenciales describe el estado anterior, no el observado aquí.
 
+**Actualización posterior:** el responsable ya subió las muestras. El resultado
+de las nueve pruebas reales del adaptador/motor está en
+[SCREENLY_HLS_DRIVE_LIVE_VALIDATION.md](SCREENLY_HLS_DRIVE_LIVE_VALIDATION.md).
+El resto de este documento conserva la evidencia de preparación inicial.
+
 ## Resultado real y límites
 
 Tras publicar la configuración del entorno de Codex, un GET autenticado de
