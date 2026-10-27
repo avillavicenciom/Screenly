@@ -7,6 +7,7 @@ export const HLS_CONTRACT_LIMITS = {
 	nodes: 250_000,
 	entries: 10_000,
 	tracks: 32,
+	propertyName: 128,
 } as const;
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
 const uuid = z.string().uuid();
@@ -138,9 +139,10 @@ function bounded(input: unknown, reserve = 0) {
 				typeof value === "object" && value !== null && !active.has(value),
 			);
 			requireContract(
-				Array.isArray(value) ||
-					Object.getPrototypeOf(value) === Object.prototype ||
-					Object.getPrototypeOf(value) === null,
+				Array.isArray(value)
+					? Object.getPrototypeOf(value) === Array.prototype
+					: Object.getPrototypeOf(value) === Object.prototype ||
+							Object.getPrototypeOf(value) === null,
 			);
 			if (Array.isArray(value))
 				requireContract(
@@ -149,14 +151,19 @@ function bounded(input: unknown, reserve = 0) {
 				);
 			active.add(value);
 			requireContract(Object.keys(value).length <= HLS_CONTRACT_LIMITS.nodes);
-			const descriptors = Object.getOwnPropertyDescriptors(value);
 			requireContract(
-				Reflect.ownKeys(value).every((key) => typeof key === "string"),
+				Reflect.ownKeys(value).every(
+					(key) =>
+						typeof key === "string" &&
+						key.length <= HLS_CONTRACT_LIMITS.propertyName,
+				),
 			);
+			const descriptors = Object.getOwnPropertyDescriptors(value);
 			for (const [key, descriptor] of Object.entries(descriptors)) {
 				if (Array.isArray(value) && key === "length") continue;
 				requireContract("value" in descriptor && descriptor.enumerable);
 				bytes += Buffer.byteLength(JSON.stringify(key)) + 3;
+				requireContract(bytes <= HLS_CONTRACT_LIMITS.bytes - reserve);
 				walk(descriptor.value, depth + 1);
 			}
 			active.delete(value);

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	canonicalHlsInventory,
 	digestHlsInventory,
@@ -508,4 +508,38 @@ it("does not mutate caller inputs during validation or canonicalization", () => 
 	validateHlsManifest(sealHlsInventory(input));
 	canonicalHlsInventory(input);
 	expect(input).toEqual(original);
+});
+
+it("rejects inherited array iterators without executing their getters", () => {
+	const input = fixture();
+	let invoked = false;
+	const prototype = Object.create(Array.prototype);
+	Object.defineProperty(prototype, Symbol.iterator, {
+		get() {
+			invoked = true;
+			return Array.prototype[Symbol.iterator];
+		},
+	});
+	Object.setPrototypeOf(input.entries, prototype);
+	expect(() => validateHlsInventory(input)).toThrow();
+	expect(invoked).toBe(false);
+});
+
+it("rejects custom prototypes on nested reference arrays", () => {
+	const input = fixture();
+	const master = input.entries[0];
+	if (master?.role !== "master") throw new Error("fixture");
+	Object.setPrototypeOf(master.variantIds, Object.create(Array.prototype));
+	expect(() => validateHlsInventory(input)).toThrow();
+});
+
+it("rejects oversized property names before serializing them", () => {
+	const name = "x".repeat(HLS_CONTRACT_LIMITS.bytes + 1);
+	const stringify = vi.spyOn(JSON, "stringify");
+	try {
+		expect(() => validateHlsInventory({ [name]: 0 })).toThrow();
+		expect(stringify.mock.calls.some(([value]) => value === name)).toBe(false);
+	} finally {
+		stringify.mockRestore();
+	}
 });
