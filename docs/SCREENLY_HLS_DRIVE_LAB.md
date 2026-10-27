@@ -39,8 +39,9 @@ sean descargables o cumplan los requisitos de identidad del adaptador.
 
 Se generó fuera del repositorio un vídeo azul H.264 de un segundo, 160×90,
 10 fotogramas, sin audio ni datos personales, usando FFmpeg 7.1.5. El paquete
-`screenly-hls-fixtures.zip` es un artefacto local de entrega, no una dependencia
-ni un archivo versionado. Contiene init, un segmento fMP4, playlist local,
+[`screenly-hls-fixtures.zip`](fixtures/screenly-hls-fixtures.zip) se conserva en
+`docs/fixtures/` para descargarlo desde GitHub; el enlace inicial al workspace no
+permitía descargarlo desde el chat. No es una dependencia. Contiene init, un segmento fMP4, playlist local,
 metadatos y las instrucciones de subida.
 
 | Archivo           | Bytes | SHA256 de la muestra entregada                                     |
