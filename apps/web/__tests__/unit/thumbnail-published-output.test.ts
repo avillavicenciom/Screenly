@@ -1,26 +1,55 @@
 import { Effect, Exit } from "effect";
 import { NextRequest } from "next/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-	policy: vi.fn(),
+	policy: vi.fn<() => Promise<Exit.Exit<readonly unknown[], unknown>>>(),
 	access: vi.fn(),
 	list: vi.fn(),
 	sign: vi.fn(),
+	head: vi.fn(),
+	dispose: async () => {},
 }));
 vi.mock("@cap/database", () => ({ db: vi.fn() }));
 vi.mock("@cap/web-backend", () => ({
 	Storage: { getAccessForVideo: mocks.access },
 	VideosPolicy: {},
+	Videos: {},
 	provideOptionalAuth: (value: unknown) => value,
 	findScreenshotObjectKey: (objects: { Key?: string }[]) =>
 		objects.find((object) => object.Key?.endsWith("screen-capture.jpg"))?.Key ??
 		null,
 }));
-vi.mock("@/lib/server", async () => ({
-	runPromise: (await import("effect")).Effect.runPromise,
-	runPromiseExit: mocks.policy,
+vi.mock("@/lib/server", async () => {
+	const { HttpApiBuilder, HttpServer } = await import("@effect/platform");
+	const { Layer } = await import("effect");
+	return {
+		apiToHandler: (
+			api: import("effect").Layer.Layer<import("@effect/platform").HttpApi.Api>,
+		) => {
+			const handler = api.pipe(
+				Layer.merge(HttpServer.layerContext),
+				HttpApiBuilder.toWebHandler,
+			);
+			mocks.dispose = handler.dispose;
+			return handler.handler;
+		},
+	};
+});
+vi.mock("@/lib/loom-preview-gif", () => ({
+	ensureLoomPreviewGif: () => Effect.succeed(false),
 }));
+vi.mock("@/lib/viewer-media", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@/lib/viewer-media")>()),
+	authorizeViewerVideo: () =>
+		Effect.promise(async () => {
+			const result = await mocks.policy();
+			return Exit.isSuccess(result)
+				? result.value[0]
+				: new Response(null, { status: 404 });
+		}),
+}));
+afterAll(() => mocks.dispose());
 vi.mock("@/lib/video-storage", () => ({
 	decodeStorageVideo: (video: unknown) => video,
 }));
@@ -38,10 +67,12 @@ beforeEach(() => {
 		Effect.succeed([
 			{
 				listObjects: mocks.list,
+				headObject: mocks.head,
 				getSignedObjectUrl: mocks.sign,
 			},
 		]),
 	);
+	mocks.head.mockReturnValue(Effect.succeed({ ContentLength: 10 }));
 	mocks.list.mockReturnValue(
 		Effect.succeed({
 			Contents: [{ Key: `${prefix}screenshot/screen-capture.jpg` }],
@@ -64,7 +95,7 @@ describe("published edit thumbnails", () => {
 			const response = await GET(request());
 			expect(response.status).toBe(200);
 			expect(await response.json()).toEqual({
-				screen: `https://storage.test/${thumbnailKey}`,
+				screen: "/api/playback/resource?videoId=video&resource=thumbnail",
 			});
 			expect(mocks.list).not.toHaveBeenCalled();
 		},
@@ -78,7 +109,8 @@ describe("published edit thumbnails", () => {
 		const response = await GET(request());
 		expect(response.status).toBe(200);
 		expect(mocks.list).toHaveBeenCalledOnce();
-		expect(mocks.sign).toHaveBeenCalledWith(
+		expect(mocks.sign).not.toHaveBeenCalled();
+		expect(mocks.head).toHaveBeenCalledWith(
 			`${prefix}screenshot/screen-capture.jpg`,
 		);
 	});

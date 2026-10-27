@@ -421,6 +421,26 @@ describe("Instant playlist readiness API", () => {
 		expect(mocks.read).not.toHaveBeenCalled();
 	});
 
+	it.each([
+		["transcription", "vtt"],
+		["enhanced-audio", "enhanced-audio"],
+	])(
+		"resolves %s through the viewer proxy for every bucket",
+		async (fileType, resource) => {
+			for (const defaultBucket of [false, true]) {
+				mocks.defaultBucket = defaultBucket;
+				const response = await request("master", `&fileType=${fileType}`);
+				expect(response.status).toBe(302);
+				expect(response.headers.get("Location")).toBe(
+					`/api/playback/resource?videoId=recording&resource=${resource}`,
+				);
+				expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+				expect(mocks.sign).not.toHaveBeenCalled();
+				expect(mocks.read).not.toHaveBeenCalled();
+			}
+		},
+	);
+
 	it.each(["custom", "default"] as const)(
 		"redirects a published MP4 in a %s bucket to the authorization proxy",
 		async (bucket) => {

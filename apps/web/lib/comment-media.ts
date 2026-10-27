@@ -1,10 +1,9 @@
-/**
- * Playback/thumbnail URL for a media comment's object. /api/storage/object
- * enforces the video's view policy and asserts the key sits under the video's
- * prefix, then 302s to a signed URL (S3) or byte-proxies (Drive).
- */
-export const commentMediaUrl = (videoId: string, key: string) =>
-	`/api/storage/object?videoId=${encodeURIComponent(videoId)}&key=${encodeURIComponent(key)}`;
+export const commentMediaUrl = (
+	videoId: string,
+	commentId: string,
+	thumbnail = false,
+) =>
+	`/api/playback/resource?videoId=${encodeURIComponent(videoId)}&resource=${thumbnail ? "comment-thumbnail" : "comment-media"}&commentId=${encodeURIComponent(commentId)}`;
 
 // Extensions derive from an allowlisted content type, never from a client
 // filename (the signed-upload route's extension inference maps .webm to

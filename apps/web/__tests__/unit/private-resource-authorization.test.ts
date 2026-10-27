@@ -12,7 +12,15 @@ import {
 } from "@cap/web-domain";
 import { Effect, Option } from "effect";
 import { NextRequest } from "next/server";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	afterAll,
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	vi,
+} from "vitest";
 
 const state = vi.hoisted(() => ({
 	user: null as string | null,
@@ -22,6 +30,7 @@ const state = vi.hoisted(() => ({
 	sign: vi.fn(),
 	access: vi.fn(),
 	lookup: vi.fn(),
+	dispose: async () => {},
 }));
 
 const video = {
@@ -73,7 +82,14 @@ function withUser<A, E, R>(effect: Effect.Effect<A, E, R>) {
 
 vi.mock("@cap/database", () => ({
 	db: () => ({
-		select: () => ({ from: () => ({ where: state.lookup }) }),
+		select: () => ({
+			from: () => ({
+				where: (...args: unknown[]) =>
+					Object.assign(state.lookup(...args), {
+						limit: async () => [{ tombstoneAt: null }],
+					}),
+			}),
+		}),
 	}),
 }));
 vi.mock("@cap/web-backend", () => ({
@@ -93,10 +109,29 @@ vi.mock("@cap/web-backend", () => ({
 	findScreenshotObjectKey: () =>
 		"owner/private-video/screenshot/screen-capture.jpg",
 }));
-vi.mock("@/lib/server", () => ({
-	runPromise: Effect.runPromise,
-	runPromiseExit: Effect.runPromiseExit,
-}));
+vi.mock("@/lib/server", async () => {
+	const { HttpApiBuilder, HttpServer } = await import("@effect/platform");
+	const { Layer } = await import("effect");
+	return {
+		runPromise: Effect.runPromise,
+		runPromiseExit: Effect.runPromiseExit,
+		apiToHandler: (
+			api: import("effect").Layer.Layer<import("@effect/platform").HttpApi.Api>,
+		) => {
+			const handler = api.pipe(
+				Layer.merge(HttpServer.layerContext),
+				HttpApiBuilder.toWebHandler,
+			);
+			const previous = state.dispose;
+			state.dispose = async () => {
+				await previous();
+				await handler.dispose();
+			};
+			return handler.handler;
+		},
+	};
+});
+afterAll(() => state.dispose());
 vi.mock("@/lib/video-storage", () => ({
 	decodeStorageVideo: (value: unknown) => value,
 }));
@@ -204,7 +239,7 @@ describe.each(profiles)(
 				),
 			);
 			expect(response.status).toBe(allowed ? 200 : 404);
-			expect(state.sign).toHaveBeenCalledTimes(allowed ? 1 : 0);
+			expect(state.sign).not.toHaveBeenCalled();
 			expect(state.lookup).toHaveBeenCalledTimes(allowed ? 1 : 0);
 		});
 
@@ -342,14 +377,14 @@ describe("signed private link lifecycle: current behavior", () => {
 		expectPrivateCache(response);
 	});
 
-	it("prevents caching an authorized GIF redirect", async () => {
+	it("prevents caching authorized GIF bytes", async () => {
 		state.user = "owner";
 		const response = await preview(
 			new NextRequest(
 				"https://screenly.test/api/video/preview?videoId=private-video",
 			),
 		);
-		expect(response.status).toBe(302);
+		expect(response.status).toBe(200);
 		expectPrivateCache(response);
 	});
 });
@@ -368,7 +403,7 @@ const endpoints = [
 		get: preview,
 		head: previewHead,
 		path: "/api/video/preview?videoId=private-video",
-		success: 302,
+		success: 200,
 		denied: 404,
 	},
 	{
@@ -451,7 +486,7 @@ describe.each(endpoints)(
 
 it("keeps the OG fallback redirect uncacheable", async () => {
 	state.user = "owner";
-	state.head.mockReturnValue(Effect.fail(new Error("Missing preview")));
+	state.head.mockReturnValue(Effect.fail({ name: "NotFound" }));
 	const response = await preview(
 		new NextRequest(
 			"https://screenly.test/api/video/preview?videoId=private-video&fallback=og",
