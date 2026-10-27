@@ -523,3 +523,61 @@ it("checks elapsed time even when immediate stream promises prevent timers from 
 		now.mockRestore();
 	}
 });
+
+it("releases the reader lock even if cancellation never settles after invalid content", async () => {
+	const f = fixture();
+	let cancelled = false;
+	const body = new ReadableStream<Uint8Array>(
+		{
+			pull(controller) {
+				controller.enqueue(new Uint8Array(f.data.length + 1));
+			},
+			cancel() {
+				cancelled = true;
+				return new Promise<void>(() => {});
+			},
+		},
+		{ highWaterMark: 0 },
+	);
+	f.open.mockImplementation(async (request) => ({
+		observation: f.observation(request),
+		body,
+	}));
+	await expect(
+		prepareVerifiedHlsSnapshot(f.manifest, f.scope, f.storage),
+	).rejects.toMatchObject({ code: "content-mismatch" });
+	expect(cancelled).toBe(true);
+	expect(body.locked).toBe(false);
+});
+
+it("releases a pending reader on abort without waiting for cancellation acknowledgement", async () => {
+	const f = fixture();
+	const controller = new AbortController();
+	let startRead: (() => void) | undefined;
+	const reading = new Promise<void>((resolve) => {
+		startRead = resolve;
+	});
+	const body = new ReadableStream<Uint8Array>(
+		{
+			pull() {
+				startRead?.();
+			},
+			cancel() {
+				return new Promise<void>(() => {});
+			},
+		},
+		{ highWaterMark: 0 },
+	);
+	f.open.mockImplementation(async (request) => ({
+		observation: f.observation(request),
+		body,
+	}));
+	const operation = prepareVerifiedHlsSnapshot(f.manifest, f.scope, f.storage, {
+		signal: controller.signal,
+	});
+	const rejected = expect(operation).rejects.toMatchObject({ code: "aborted" });
+	await reading;
+	controller.abort();
+	await rejected;
+	expect(body.locked).toBe(false);
+});

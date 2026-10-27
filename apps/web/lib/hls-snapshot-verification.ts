@@ -277,11 +277,8 @@ export async function prepareVerifiedHlsSnapshot(
 			} finally {
 				if (!complete) {
 					if (reader) {
-						const activeReader = reader;
-						void activeReader
-							.cancel()
-							.catch(() => {})
-							.finally(() => activeReader.releaseLock());
+						void reader.cancel().catch(() => {});
+						reader.releaseLock();
 					} else void opened.body?.cancel().catch(() => {});
 				} else reader?.releaseLock();
 			}
