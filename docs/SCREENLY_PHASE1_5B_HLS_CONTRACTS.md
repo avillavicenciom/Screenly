@@ -76,10 +76,14 @@ namespace reservado; este módulo no cambia sus permisos.
 
 Antes del schema hay un recorrido limitado para objetos JSON ordinarios:
 profundidad 12, 250000 nodos, 10000 elementos por array, 32 pistas y 10000 entradas
-totales. Presupuesto conservador de 4 MiB, con reserva de 1024 bytes para el
+totales. Los nombres de propiedades tienen un máximo de 128 caracteres y se
+comprueban antes de serializarlos. Presupuesto conservador de 4 MiB, con reserva de 1024 bytes para el
 envoltorio; se comprueba también el tamaño de la representación del inventario.
 Se rechazan ciclos JavaScript, getters sin ejecutarlos, prototipos no ordinarios,
-arrays dispersos, símbolos y valores no JSON. Los límites no sustituyen el
+arrays dispersos, símbolos y valores no JSON. Los arrays deben tener exactamente
+el prototipo Array.prototype del mismo contexto de ejecución; no se admiten
+subclases ni prototipos personalizados, incluso en arrays de referencias. Los
+límites no sustituyen el
 control de tamaño **antes de parsear** una futura petición HTTP; tampoco ofrecen
 aislamiento frente a objetos Proxy hostiles construidos dentro del proceso.
 
@@ -151,7 +155,7 @@ No hay certificación de seguridad ni revocación HLS nueva en esta entrega.
 
 ## Pruebas y checks ejecutados
 
-**282 pruebas aprobadas / 7 archivos**, incluidas **63 nuevas** de contratos:
+**285 pruebas aprobadas / 7 archivos**, incluidas **66** de contratos:
 
 ```bash
 bun run --cwd apps/web test \
@@ -183,6 +187,23 @@ La búsqueda de imports `hls-publication-contract` en código de apps/packages
 solo encuentra el nuevo test: no hay invocaciones productivas, registro de
 rutas ni barrels modificados. No hay servicios iniciados, migraciones, llamadas
 pagadas o cambios de infraestructura. No se ejecuta E2E ni storage real.
+
+## Corrección tras revisión de 6B.1
+
+La revisión detectó dos huecos en el prevalidador: arrays con getters heredados
+podían llegar a Zod y ejecutar su iterador; nombres de propiedades mayores que
+el presupuesto se serializaban antes del rechazo. El módulo seguía sin
+consumidores productivos, por lo que no se identificó exposición en endpoints.
+
+Se añadieron tres regresiones: getter heredado del iterador, prototipo
+personalizado de un array de referencias y nombre de propiedad superior a 4 MiB
+que no debe pasar por JSON.stringify. Primero fallaron las tres (63 casos
+anteriores pasaban); tras la corrección pasan los 66 casos del contrato y los
+285 de la batería de siete archivos. Se mantiene la limitación sobre objetos
+Proxy hostiles y la obligación de limitar HTTP antes del parseo.
+
+No se inicia 1.5B.6B.2. Solo se endurece el contrato aislado; sin cambios en
+reproducción, permisos, escritores, registro CAS ni identidades de storage.
 
 ## Próximo incremento y parada
 
