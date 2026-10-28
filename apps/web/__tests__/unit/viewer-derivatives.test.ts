@@ -22,6 +22,7 @@ vi.mock("@cap/env", () => ({
 const state = vi.hoisted(() => ({
 	user: null as string | null,
 	member: true,
+	viewerGrant: false,
 	exists: true,
 	databaseFails: false,
 	deletedOrganization: false,
@@ -69,7 +70,8 @@ function load(id: string) {
 		{
 			repo: {
 				getById: () => Effect.die("Unexpected lookup"),
-				hasViewerGrant: () => Effect.succeed(false),
+				hasViewerGrant: (_id, email) =>
+					Effect.succeed(email === "viewer@test.invalid" && state.viewerGrant),
 			},
 			orgsRepo: {
 				membershipForVideo: (user) =>
@@ -203,16 +205,22 @@ function expectNoStorage() {
 	expect(state.sign).not.toHaveBeenCalled();
 	expect(state.list).not.toHaveBeenCalled();
 	expect(state.listObjects).not.toHaveBeenCalled();
+	expect(state.generate).not.toHaveBeenCalled();
 }
-function expectPrivate(response: Response) {
+function expectPrivate(response: Response, location: string | null = null) {
 	expect(response.headers.get("Cache-Control")).toBe("private, no-store");
-	expect(response.headers.get("Location")).toBeNull();
+	expect(response.headers.get("CDN-Cache-Control")).toBe("no-store");
+	expect(response.headers.get("Vercel-CDN-Cache-Control")).toBe("no-store");
+	expect(response.headers.get("Pragma")).toBe("no-cache");
+	expect(response.headers.get("Expires")).toBe("0");
+	expect(response.headers.get("Location")).toBe(location);
 }
 beforeEach(() => {
 	vi.clearAllMocks();
 	Object.assign(state, {
 		user: "owner",
 		member: true,
+		viewerGrant: false,
 		exists: true,
 		databaseFails: false,
 		deletedOrganization: false,
@@ -284,22 +292,76 @@ const query = (resource: string) =>
 	`videoId=video&resource=${resource}&commentId=comment`;
 function cache(response: Response) {
 	expectPrivate(response);
-	expect(response.headers.get("CDN-Cache-Control")).toBe("no-store");
-	expect(response.headers.get("Vercel-CDN-Cache-Control")).toBe("no-store");
+}
+
+const retrievals: {
+	name: string;
+	method: "GET" | "HEAD";
+	headers: Record<string, string>;
+	status: number;
+	body: string;
+}[] = [
+	{ name: "GET", method: "GET", headers: {}, status: 200, body: "0123456789" },
+	{ name: "HEAD", method: "HEAD", headers: {}, status: 200, body: "" },
+	{
+		name: "Range",
+		method: "GET",
+		headers: { Range: "bytes=2-4" },
+		status: 206,
+		body: "234",
+	},
+	{
+		name: "matching If-Range",
+		method: "GET",
+		headers: { Range: "bytes=2-4", "If-Range": '"v1"' },
+		status: 206,
+		body: "234",
+	},
+	{
+		name: "stale If-Range",
+		method: "GET",
+		headers: { Range: "bytes=2-4", "If-Range": '"old"' },
+		status: 200,
+		body: "0123456789",
+	},
+];
+const revocations = ["membership", "viewer grant", "public access", "password"];
+function admitFor(reason: string) {
+	state.user = reason === "viewer grant" ? "viewer" : "member";
+	state.viewerGrant = reason === "viewer grant";
+	if (reason === "public access") {
+		state.user = null;
+		video = Video.Video.make({ ...video, public: true });
+	}
+	if (reason === "password") {
+		state.password = "old-hash";
+		state.verified = ["old-hash"];
+	}
+}
+function revoke(reason: string) {
+	if (reason === "membership") state.member = false;
+	if (reason === "viewer grant") state.viewerGrant = false;
+	if (reason === "public access")
+		video = Video.Video.make({ ...video, public: false });
+	if (reason === "password") state.password = "new-hash";
 }
 
 describe.each(resources)("derived resource $resource", ({ resource, mime }) => {
-	it.each(["owner", "member"])("delivers GET bytes to %s", async (user) => {
-		state.user = user;
-		const response = await request({}, "GET", query(resource));
-		expect(response.status).toBe(200);
-		expect(response.headers.get("content-type")).toBe(mime);
-		expect(response.headers.get("content-length")).toBe("10");
-		expect(response.headers.get("etag")).toBe('"v1"');
-		cache(response);
-		expect(await response.text()).toBe("0123456789");
-		expect(state.sign).not.toHaveBeenCalled();
-	});
+	it.each(["owner", "member", "viewer"])(
+		"delivers GET bytes to %s",
+		async (user) => {
+			state.user = user;
+			state.viewerGrant = user === "viewer";
+			const response = await request({}, "GET", query(resource));
+			expect(response.status).toBe(200);
+			expect(response.headers.get("content-type")).toBe(mime);
+			expect(response.headers.get("content-length")).toBe("10");
+			expect(response.headers.get("etag")).toBe('"v1"');
+			cache(response);
+			expect(await response.text()).toBe("0123456789");
+			expect(state.sign).not.toHaveBeenCalled();
+		},
+	);
 	it.each([null, "outsider"])(
 		"denies %s and valid legacy tokens before storage",
 		async (user) => {
@@ -318,41 +380,33 @@ describe.each(resources)("derived resource $resource", ({ resource, mime }) => {
 			expectNoStorage();
 		},
 	);
-	it("allows explicit public access but denies the next read after privatization", async () => {
-		state.user = null;
-		video = Video.Video.make({ ...video, public: true });
-		const admitted = await request({}, "GET", query(resource));
-		expect(admitted.status).toBe(200);
-		video = Video.Video.make({ ...video, public: false });
-		vi.clearAllMocks();
-		const response = await request({}, "GET", query(resource));
-		expect(response.status).toBe(404);
-		expectNoStorage();
-		expect(await admitted.text()).toBe("0123456789");
-	});
-	it("revokes membership for the next Range", async () => {
-		state.user = "member";
-		expect((await request({}, "GET", query(resource))).status).toBe(200);
-		state.member = false;
-		vi.clearAllMocks();
-		const response = await request(
-			{ Range: "bytes=2-4" },
-			"GET",
-			query(resource),
+	describe.each(revocations)("after revoking %s", (reason) => {
+		it.each(retrievals)(
+			"reauthorizes $name before storage IO",
+			async (read) => {
+				admitFor(reason);
+				const admitted = await request(
+					read.headers,
+					read.method,
+					query(resource),
+				);
+				expect(admitted.status).toBe(read.status);
+				cache(admitted);
+				const downloaded = await admitted.text();
+				expect(downloaded).toBe(read.body);
+				revoke(reason);
+				vi.clearAllMocks();
+				const denied = await request(
+					read.headers,
+					read.method,
+					query(resource),
+				);
+				expect(denied.status).toBe(404);
+				cache(denied);
+				expect(await denied.text()).toBe("");
+				expectNoStorage();
+			},
 		);
-		expect(response.status).toBe(404);
-		cache(response);
-		expectNoStorage();
-	});
-	it("checks changed passwords", async () => {
-		state.user = "member";
-		state.password = "old";
-		state.verified = ["old"];
-		expect((await request({}, "GET", query(resource))).status).toBe(200);
-		state.password = "new";
-		vi.clearAllMocks();
-		expect((await request({}, "GET", query(resource))).status).toBe(404);
-		expectNoStorage();
 	});
 	it.each(["deleted", "org", "db", "other-id"])(
 		"denies %s before storage",
@@ -448,6 +502,83 @@ describe.each(resources)("derived resource $resource", ({ resource, mime }) => {
 		expect(cancel).toHaveBeenCalledOnce();
 	});
 });
+
+function aliasRequest(
+	alias: "thumbnail" | "preview",
+	headers: Record<string, string> = {},
+	method: "GET" | "HEAD" = "GET",
+) {
+	const path = alias === "thumbnail" ? "/api/thumbnail" : "/api/video/preview";
+	const handler =
+		alias === "thumbnail"
+			? method === "HEAD"
+				? thumbnailHead
+				: thumbnailGet
+			: method === "HEAD"
+				? previewHead
+				: previewGet;
+	return handler(
+		new NextRequest(`https://screenly.test${path}?videoId=video`, {
+			headers,
+			method,
+		}),
+	);
+}
+
+describe.each(["thumbnail", "preview"] as const)(
+	"compatibility route %s",
+	(alias) => {
+		it.each(["owner", "member", "viewer"])(
+			"admits %s with current access",
+			async (user) => {
+				state.user = user;
+				state.viewerGrant = user === "viewer";
+				const response = await aliasRequest(alias);
+				expect(response.status).toBe(200);
+				cache(response);
+				if (alias === "thumbnail")
+					expect(await response.json()).toEqual({
+						screen: derivativeUrl("video", "thumbnail"),
+					});
+				else expect(await response.text()).toBe("0123456789");
+				expect(state.sign).not.toHaveBeenCalled();
+			},
+		);
+		it.each([null, "outsider"])("denies %s before storage IO", async (user) => {
+			state.user = user;
+			const response = await aliasRequest(alias);
+			expect(response.status).toBe(404);
+			cache(response);
+			expect(await response.text()).toBe("");
+			expectNoStorage();
+		});
+		describe.each(revocations)("after revoking %s", (reason) => {
+			it.each(alias === "thumbnail" ? retrievals.slice(0, 2) : retrievals)(
+				"reauthorizes $name before storage IO",
+				async (read) => {
+					admitFor(reason);
+					const admitted = await aliasRequest(alias, read.headers, read.method);
+					expect(admitted.status).toBe(
+						alias === "thumbnail" ? 200 : read.status,
+					);
+					cache(admitted);
+					if (alias === "thumbnail" && read.method === "GET")
+						expect(await admitted.json()).toEqual({
+							screen: derivativeUrl("video", "thumbnail"),
+						});
+					else expect(await admitted.text()).toBe(read.body);
+					revoke(reason);
+					vi.clearAllMocks();
+					const denied = await aliasRequest(alias, read.headers, read.method);
+					expect(denied.status).toBe(404);
+					cache(denied);
+					expect(await denied.text()).toBe("");
+					expectNoStorage();
+				},
+			);
+		});
+	},
+);
 
 describe("resource resolution and consumers", () => {
 	it.each(["thumbnail", "preview"])(
@@ -662,3 +793,209 @@ it.each(["../other.gif", "owner/other/preview.gif"])(
 		expectNoStorage();
 	},
 );
+
+describe.each(resources)(
+	"derived HTTP boundary $resource",
+	({ resource, mime }) => {
+		it.each([
+			{ name: "missing", error: { name: "NotFound" }, status: 404 },
+			{
+				name: "unavailable",
+				error: new Error("origin unavailable"),
+				status: 502,
+			},
+		])(
+			"keeps a $name HEAD private without reading or generating",
+			async ({ error, status }) => {
+				state.head.mockReturnValue(Effect.fail(error));
+				const response = await request({}, "HEAD", query(resource));
+				expect(response.status).toBe(status);
+				expect(await response.text()).toBe("");
+				cache(response);
+				expect(state.read).not.toHaveBeenCalled();
+				expect(state.sign).not.toHaveBeenCalled();
+				expect(state.generate).not.toHaveBeenCalled();
+			},
+		);
+		it("ignores a weak If-Range and returns the complete authorized object", async () => {
+			const response = await request(
+				{ Range: "bytes=2-4", "If-Range": 'W/"v1"' },
+				"GET",
+				query(resource),
+			);
+			expect(response.status).toBe(200);
+			expect(response.headers.get("Content-Range")).toBeNull();
+			expect(response.headers.get("Content-Length")).toBe("10");
+			expect(await response.text()).toBe("0123456789");
+			cache(response);
+			expect(state.read.mock.calls[0]?.[1]).toBeNull();
+			expect(state.sign).not.toHaveBeenCalled();
+		});
+		it("cancels an origin 416 body and exposes only a private range error", async () => {
+			const cancel = vi.fn();
+			state.read.mockReturnValue(
+				Effect.succeed(
+					new Response(
+						new ReadableStream<Uint8Array>({ cancel }, { highWaterMark: 0 }),
+						{
+							status: 416,
+							headers: {
+								Location: "https://secret.s3.example?signature=origin",
+								"Set-Cookie": "storage-session=fixture-provider-cookie",
+							},
+						},
+					),
+				),
+			);
+			const response = await request(
+				{ Range: "bytes=2-4" },
+				"GET",
+				query(resource),
+			);
+			expect(response.status).toBe(416);
+			expect(response.headers.get("Content-Range")).toBe("bytes */10");
+			expect(response.headers.get("Set-Cookie")).toBeNull();
+			expect(await response.text()).toBe("");
+			cache(response);
+			expect(cancel).toHaveBeenCalledOnce();
+			expect(state.sign).not.toHaveBeenCalled();
+		});
+		it("does not forward origin URLs, provider credentials or public cache headers", async () => {
+			state.read.mockReturnValue(
+				Effect.succeed(
+					new Response("0123456789", {
+						headers: {
+							"Content-Length": "10",
+							"Cache-Control": "public, max-age=300",
+							Location: "https://secret.s3.example?signature=origin",
+							"Set-Cookie": "storage-session=fixture-provider-cookie",
+							Authorization: "Bearer fixture-provider-token",
+							"X-Amz-Security-Token": "fixture-provider-token",
+						},
+					}),
+				),
+			);
+			const response = await request({}, "GET", query(resource));
+			expect(response.status).toBe(200);
+			expect(response.headers.get("Content-Type")).toBe(mime);
+			expect(response.headers.get("Authorization")).toBeNull();
+			expect(response.headers.get("Set-Cookie")).toBeNull();
+			expect(response.headers.get("X-Amz-Security-Token")).toBeNull();
+			const serialized = JSON.stringify([...response.headers.entries()]);
+			expect(serialized).not.toContain("secret.s3.example");
+			expect(serialized).not.toContain("fixture-provider");
+			expect(await response.text()).toBe("0123456789");
+			cache(response);
+			expect(state.sign).not.toHaveBeenCalled();
+		});
+		it("denies new reads while an already admitted stream can finish", async () => {
+			admitFor("viewer grant");
+			let upstream: ReadableStreamDefaultController<Uint8Array> | undefined;
+			const cancel = vi.fn();
+			state.read.mockReturnValue(
+				Effect.succeed(
+					new Response(
+						new ReadableStream<Uint8Array>(
+							{
+								start(controller) {
+									upstream = controller;
+								},
+								cancel,
+							},
+							{ highWaterMark: 0 },
+						),
+						{ headers: { "Content-Length": "10" } },
+					),
+				),
+			);
+			const admitted = await request({}, "GET", query(resource));
+			expect(admitted.status).toBe(200);
+			cache(admitted);
+			const reader = admitted.body?.getReader();
+			if (!reader || !upstream)
+				throw new Error("Missing admitted derivative stream");
+			try {
+				upstream.enqueue(new TextEncoder().encode("01234"));
+				const downloaded = await reader.read();
+				expect(new TextDecoder().decode(downloaded.value)).toBe("01234");
+				revoke("viewer grant");
+				vi.clearAllMocks();
+				const denied = await request(
+					{ Range: "bytes=5-9" },
+					"GET",
+					query(resource),
+				);
+				expect(denied.status).toBe(404);
+				expect(await denied.text()).toBe("");
+				cache(denied);
+				expectNoStorage();
+				upstream.enqueue(new TextEncoder().encode("56789"));
+				upstream.close();
+				expect(new TextDecoder().decode((await reader.read()).value)).toBe(
+					"56789",
+				);
+				expect((await reader.read()).done).toBe(true);
+				expect(new TextDecoder().decode(downloaded.value)).toBe("01234");
+				expect(cancel).not.toHaveBeenCalled();
+			} finally {
+				await reader.cancel();
+				reader.releaseLock();
+			}
+		});
+	},
+);
+
+it.each(["GET", "HEAD"] as const)(
+	"keeps an authorized OG fallback redirect private for %s and rechecks revocation",
+	async (method) => {
+		admitFor("viewer grant");
+		state.head.mockReturnValue(Effect.fail({ name: "NotFound" }));
+		const handler = method === "HEAD" ? previewHead : previewGet;
+		const open = () =>
+			handler(
+				new NextRequest(
+					"https://screenly.test/api/video/preview?videoId=video&fallback=og",
+					{ method },
+				),
+			);
+		const admitted = await open();
+		expect(admitted.status).toBe(302);
+		expectPrivate(admitted, "/api/video/og?videoId=video");
+		expect(await admitted.text()).toBe("");
+		expect(state.read).not.toHaveBeenCalled();
+		expect(state.generate).not.toHaveBeenCalled();
+		expect(state.sign).not.toHaveBeenCalled();
+		revoke("viewer grant");
+		vi.clearAllMocks();
+		const denied = await open();
+		expect(denied.status).toBe(404);
+		expect(await denied.text()).toBe("");
+		cache(denied);
+		expectNoStorage();
+	},
+);
+
+it("does not turn a retained thumbnail descriptor into a grant for its byte URL", async () => {
+	admitFor("viewer grant");
+	const admitted = await aliasRequest("thumbnail");
+	expect(admitted.status).toBe(200);
+	cache(admitted);
+	const descriptor: unknown = await admitted.json();
+	expect(descriptor).toEqual({ screen: derivativeUrl("video", "thumbnail") });
+	if (
+		typeof descriptor !== "object" ||
+		descriptor === null ||
+		!("screen" in descriptor) ||
+		typeof descriptor.screen !== "string"
+	)
+		throw new Error("Missing thumbnail proxy descriptor");
+	revoke("viewer grant");
+	vi.clearAllMocks();
+	const denied = await GET(
+		new NextRequest(`https://screenly.test${descriptor.screen}`),
+	);
+	expect(denied.status).toBe(404);
+	expect(await denied.text()).toBe("");
+	cache(denied);
+	expectNoStorage();
+});
