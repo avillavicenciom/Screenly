@@ -120,9 +120,7 @@ export const VoiceNotePill = ({
 		if (audioRef.current) return audioRef.current;
 		const el = new Audio(
 			localUrl ??
-				(comment.mediaKey
-					? commentMediaUrl(comment.videoId, comment.mediaKey)
-					: ""),
+				(comment.mediaKey ? commentMediaUrl(comment.videoId, comment.id) : ""),
 		);
 		el.preload = "metadata";
 		el.addEventListener("ended", () => {
@@ -136,7 +134,14 @@ export const VoiceNotePill = ({
 		});
 		audioRef.current = el;
 		return el;
-	}, [comment.mediaKey, comment.videoId, durationOf, localUrl, stopPainting]);
+	}, [
+		comment.id,
+		comment.mediaKey,
+		comment.videoId,
+		durationOf,
+		localUrl,
+		stopPainting,
+	]);
 
 	const toggle = useCallback(() => {
 		const el = ensureAudio();

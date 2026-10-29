@@ -110,8 +110,8 @@ function createServerEnv() {
 				),
 
 			/// Settings
-			CAP_VIDEOS_DEFAULT_PUBLIC: boolString(true).describe(
-				"Should videos be public or private by default",
+			CAP_VIDEOS_DEFAULT_PUBLIC: boolString(false).describe(
+				"Legacy setting; new videos are always private and must be shared explicitly",
 			),
 			CAP_CHROME_EXTENSION_ID: z
 				.string()
@@ -214,6 +214,13 @@ function createServerEnv() {
 			DUB_API_KEY: z.string().optional(),
 
 			/// Media Server
+			MEDIA_INTERNAL_CAPABILITY_SECRET: z
+				.string()
+				.min(32)
+				.optional()
+				.describe(
+					"Dedicated processing capability signing key shared with the media server; independent from viewer and legacy webhook secrets",
+				),
 			MEDIA_SERVER_URL: z
 				.string()
 				.optional()

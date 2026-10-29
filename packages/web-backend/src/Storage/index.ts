@@ -418,6 +418,11 @@ const copyS3ObjectForRecording = (
 
 const makeS3Access = (s3: S3BucketAccess) => ({
 	provider: "s3" as const,
+	getPlaybackObjectResponse: (
+		key: string,
+		range: string | null,
+		options: { signal: AbortSignal; ifMatch?: string },
+	) => mapStorageError(s3.getPlaybackObjectResponse(key, range, options)),
 	bucketName: s3.bucketName,
 	isPathStyle: s3.isPathStyle,
 	getSignedObjectUrl: (
@@ -1145,7 +1150,13 @@ function withPublishedRecordingOutput<
 			) => access.getObjectResponse(resolve(key), range, verification),
 		});
 	}
-	return Object.assign({}, access, shared);
+	return Object.assign({}, access, shared, {
+		getPlaybackObjectResponse: (
+			key: string,
+			range: string | null,
+			options: { signal: AbortSignal; ifMatch?: string },
+		) => access.getPlaybackObjectResponse(resolve(key), range, options),
+	});
 }
 
 type WritableStorageAccess = {

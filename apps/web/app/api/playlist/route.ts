@@ -21,6 +21,8 @@ import {
 	resolveMobileRequestOrigin,
 	resolveMobileWebResourceUrl,
 } from "@/lib/mobile-request-origin";
+import { mp4PlaybackUrl } from "@/lib/mp4-playback";
+import { PRIVATE_RESOURCE_HEADERS } from "@/lib/private-resource-response";
 import {
 	getEarlySegmentTracks,
 	getSegmentPlaybackState,
@@ -175,12 +177,36 @@ const getPlaylistResponse = (
 	publicOrigin: string,
 ) =>
 	Effect.gen(function* () {
-		const [bucket, customBucket] = yield* Storage.getAccessForVideo(video);
 		const source = Video.Video.getSource(video);
 		const isMp4Source = source instanceof Video.Mp4Source;
 		const mp4Key = isMp4Source
 			? source.getFileKey()
 			: `${video.ownerId}/${video.id}/result.mp4`;
+
+		if (
+			isMp4Source &&
+			Option.isNone(urlParams.fileType) &&
+			(urlParams.videoType === "mp4" || urlParams.videoType === "master")
+		) {
+			return HttpServerResponse.redirect(mp4PlaybackUrl(video.id), {
+				headers: CACHE_CONTROL_HEADERS,
+			});
+		}
+
+		if (
+			Option.isSome(urlParams.fileType) &&
+			(urlParams.fileType.value === "transcription" ||
+				urlParams.fileType.value === "enhanced-audio")
+		) {
+			const resource =
+				urlParams.fileType.value === "transcription" ? "vtt" : "enhanced-audio";
+			return HttpServerResponse.redirect(
+				`/api/playback/resource?videoId=${encodeURIComponent(video.id)}&resource=${resource}`,
+				{ headers: PRIVATE_RESOURCE_HEADERS },
+			);
+		}
+
+		const [bucket, customBucket] = yield* Storage.getAccessForVideo(video);
 
 		if (urlParams.videoType === "raw-preview") {
 			const rawFileKey = yield* resolveRawPreviewKey(video);
@@ -431,43 +457,6 @@ const getPlaylistResponse = (
 
 			return HttpServerResponse.redirect(
 				yield* bucket.getSignedObjectUrl(redirect),
-			);
-		}
-
-		if (
-			Option.isSome(urlParams.fileType) &&
-			urlParams.fileType.value === "transcription"
-		) {
-			return yield* bucket
-				.getObject(`${video.ownerId}/${video.id}/transcription.vtt`)
-				.pipe(
-					Effect.andThen(
-						Option.match({
-							onNone: () => Effect.fail(new HttpApiError.NotFound()),
-							onSome: (c) =>
-								HttpServerResponse.text(c).pipe(
-									HttpServerResponse.setHeaders({
-										...CACHE_CONTROL_HEADERS,
-										"Content-Type": "text/vtt",
-									}),
-								),
-						}),
-					),
-					Effect.withSpan("fetchTranscription"),
-				);
-		}
-
-		if (
-			Option.isSome(urlParams.fileType) &&
-			urlParams.fileType.value === "enhanced-audio"
-		) {
-			const enhancedAudioKey = `${video.ownerId}/${video.id}/enhanced-audio.mp3`;
-			return yield* bucket.getSignedObjectUrl(enhancedAudioKey).pipe(
-				Effect.map(HttpServerResponse.redirect),
-				Effect.catchTag("StorageError", () =>
-					Effect.fail(new HttpApiError.NotFound()),
-				),
-				Effect.withSpan("fetchEnhancedAudio"),
 			);
 		}
 

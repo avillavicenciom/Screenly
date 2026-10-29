@@ -1,7 +1,7 @@
 import type { videos } from "@cap/database/schema";
-import { Storage } from "@cap/web-backend";
 import { type User, Video } from "@cap/web-domain";
 import { Effect, Schema } from "effect";
+import { mp4PlaybackUrl } from "@/lib/mp4-playback";
 import { runPromise } from "@/lib/server";
 
 type SharePlaybackVideo = Omit<
@@ -19,10 +19,9 @@ export const getSharePlaybackUrl = (video: SharePlaybackVideo) =>
 			createdAt: video.createdAt.toISOString(),
 			updatedAt: video.updatedAt.toISOString(),
 		});
-		const [bucket] = yield* Storage.getAccessForVideo(loadedVideo);
 		const source = Video.Video.getSource(loadedVideo);
 		if (!(source instanceof Video.Mp4Source)) return null;
-		return yield* bucket.getSignedObjectUrl(source.getFileKey());
+		return mp4PlaybackUrl(loadedVideo.id);
 	})
 		.pipe(runPromise)
 		.catch(() => null);

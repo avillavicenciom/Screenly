@@ -1,4 +1,3 @@
-import { serverEnv } from "@cap/env";
 import type { Organisation } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
 import { db } from "./index.ts";
@@ -9,7 +8,6 @@ export async function getNewVideoPublic(
 ): Promise<boolean> {
 	const [organization] = await db()
 		.select({
-			defaultVideoVisibility: organizations.defaultVideoVisibility,
 			tombstoneAt: organizations.tombstoneAt,
 		})
 		.from(organizations)
@@ -20,6 +18,5 @@ export async function getNewVideoPublic(
 		throw new Error("Organization not found");
 	}
 
-	if (organization.defaultVideoVisibility === "private") return false;
-	return serverEnv().CAP_VIDEOS_DEFAULT_PUBLIC;
+	return false;
 }

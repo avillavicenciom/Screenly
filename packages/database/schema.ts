@@ -437,7 +437,7 @@ export const videos = mysqlTable(
 		height: int("height"),
 		fps: int("fps"),
 		metadata: json("metadata").$type<VideoMetadata>(),
-		public: boolean("public").notNull().default(true),
+		public: boolean("public").notNull().default(false),
 		settings: json("settings").$type<{
 			disableSummary?: boolean;
 			disableCaptions?: boolean;

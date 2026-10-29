@@ -147,6 +147,7 @@ export class VideosRepo extends Effect.Service<VideosRepo>()("VideosRepo", {
 						await db.insert(Db.videos).values([
 							{
 								...insertData,
+								public: false,
 								id,
 								orgId: data.orgId,
 								bucket: Option.getOrNull(data.bucketId ?? Option.none()),

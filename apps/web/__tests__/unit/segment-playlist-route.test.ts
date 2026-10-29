@@ -9,9 +9,11 @@ const mocks = vi.hoisted(() => ({
 	audioInitExists: false,
 	storageUnavailable: false,
 	denied: false,
+	profile: undefined as string | null | undefined,
 	defaultBucket: false,
+	legacyObjects: [] as { Key: string; Size: number }[],
 	source: { type: "desktopSegments" } as {
-		type: "desktopSegments" | "desktopMP4";
+		type: "desktopSegments" | "desktopMP4" | "MediaConvert";
 		outputKey?: string;
 	},
 	sign: vi.fn(),
@@ -28,7 +30,14 @@ vi.mock("@cap/env", () => ({
 vi.mock("@cap/web-backend", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("@cap/web-backend")>();
 	const { Context, Effect, Option } = await import("effect");
-	const { Policy, Storage: StorageDomain } = await import("@cap/web-domain");
+	const {
+		CurrentUser,
+		Organisation,
+		User,
+		Video,
+		Policy,
+		Storage: StorageDomain,
+	} = await import("@cap/web-domain");
 	const bucket = {
 		provider: "s3",
 		getObject: (key: string) =>
@@ -47,13 +56,29 @@ vi.mock("@cap/web-backend", async (importOriginal) => {
 				mocks.sign(key);
 				return `https://media.example.com/${key}`;
 			}),
+		headObject: () =>
+			Effect.succeed({
+				ContentLength: 128,
+				Metadata: {
+					duration: "3",
+					bandwidth: "2000000",
+					resolution: "1920x1080",
+				},
+			}),
 		listObjects: ({ prefix }: { prefix: string }) =>
 			mocks.storageUnavailable
 				? Effect.fail(
 						new StorageDomain.StorageError({ cause: "storage unavailable" }),
 					)
 				: Effect.succeed({
-						Contents: mocks.audioInitExists ? [{ Key: prefix, Size: 764 }] : [],
+						Contents:
+							mocks.legacyObjects.length > 0
+								? mocks.legacyObjects.filter((object) =>
+										object.Key.startsWith(prefix),
+									)
+								: mocks.audioInitExists
+									? [{ Key: prefix, Size: 764 }]
+									: [],
 					}),
 	};
 	return {
@@ -70,18 +95,54 @@ vi.mock("@cap/web-backend", async (importOriginal) => {
 		}),
 		Videos: Object.assign(Context.GenericTag("PlaylistTestVideos"), {
 			testService: {
-				getByIdForViewing: () =>
-					mocks.denied
+				getByIdForViewing: () => {
+					const result = mocks.denied
 						? Effect.fail(new Policy.PolicyDeniedError())
 						: Effect.succeed(
 								Option.some([
-									{
-										id: "recording",
-										ownerId: "owner",
-										source: mocks.source,
-									},
+									{ id: "recording", ownerId: "owner", source: mocks.source },
 								]),
-							),
+							);
+					if (mocks.profile === undefined) return result;
+					const policy = actual.buildCanViewLoaded(
+						{
+							repo: {
+								getById: () =>
+									Effect.die("Loaded policy must not reload the video"),
+								hasViewerGrant: () => Effect.succeed(false),
+							},
+							orgsRepo: {
+								membershipForVideo: (id) =>
+									Effect.succeed(
+										id === "member" ? [{ membershipId: "membership" }] : [],
+									),
+								allowedEmailDomain: () => Effect.succeed(Option.none()),
+							},
+							spacesRepo: {
+								membershipForVideo: () => Effect.succeed(Option.none()),
+								passwordsForVideo: () => Effect.succeed([]),
+							},
+						},
+						{
+							id: Video.VideoId.make("recording"),
+							ownerId: User.UserId.make("owner"),
+							orgId: Organisation.OrganisationId.make("org"),
+							public: false,
+						},
+						Option.none(),
+					);
+					const authorized = result.pipe(Policy.withPublicPolicy(policy));
+					return mocks.profile === null
+						? authorized
+						: authorized.pipe(
+								Effect.provideService(CurrentUser, {
+									id: User.UserId.make(mocks.profile),
+									email: `${mocks.profile}@example.test`,
+									activeOrganizationId: Organisation.OrganisationId.make("org"),
+									iconUrlOrKey: Option.none(),
+								}),
+							);
+				},
 			},
 		}),
 	};
@@ -141,10 +202,37 @@ describe("Instant playlist readiness API", () => {
 		mocks.recordedLengthFails = false;
 		mocks.storageUnavailable = false;
 		mocks.denied = false;
+		mocks.profile = undefined;
 		mocks.defaultBucket = false;
+		mocks.legacyObjects = [];
 		mocks.source = { type: "desktopSegments" };
 	});
 	afterAll(() => mocks.dispose());
+
+	it.each([
+		{ profile: null, allowed: false },
+		{ profile: "owner", allowed: true },
+		{ profile: "member", allowed: true },
+		{ profile: "outsider", allowed: false },
+	])(
+		"authorizes private playlists for $profile",
+		async ({ profile, allowed }) => {
+			mocks.profile = profile;
+			for (const type of [
+				"segments-master",
+				"segments-video",
+				"segments-audio",
+			]) {
+				const response = await request(type, "");
+				expect(response.status).toBe(allowed ? 200 : 401);
+				if (allowed) expect(await response.text()).toContain("#EXTM3U");
+			}
+			if (!allowed) {
+				expect(mocks.read).not.toHaveBeenCalled();
+				expect(mocks.sign).not.toHaveBeenCalled();
+			}
+		},
+	);
 
 	it("checks readiness without signing every segment URL", async () => {
 		expect((await request()).status).toBe(204);
@@ -351,8 +439,28 @@ describe("Instant playlist readiness API", () => {
 		expect(mocks.read).not.toHaveBeenCalled();
 	});
 
+	it.each([
+		["transcription", "vtt"],
+		["enhanced-audio", "enhanced-audio"],
+	])(
+		"resolves %s through the viewer proxy for every bucket",
+		async (fileType, resource) => {
+			for (const defaultBucket of [false, true]) {
+				mocks.defaultBucket = defaultBucket;
+				const response = await request("master", `&fileType=${fileType}`);
+				expect(response.status).toBe(302);
+				expect(response.headers.get("Location")).toBe(
+					`/api/playback/resource?videoId=recording&resource=${resource}`,
+				);
+				expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+				expect(mocks.sign).not.toHaveBeenCalled();
+				expect(mocks.read).not.toHaveBeenCalled();
+			}
+		},
+	);
+
 	it.each(["custom", "default"] as const)(
-		"redirects a published MP4 in a %s bucket to its retained storage key",
+		"redirects a published MP4 in a %s bucket to the authorization proxy",
 		async (bucket) => {
 			mocks.defaultBucket = bucket === "default";
 			mocks.source = {
@@ -361,9 +469,28 @@ describe("Instant playlist readiness API", () => {
 			};
 			const response = await request("mp4", "");
 			expect(response.status).toBe(302);
-			expect(mocks.sign).toHaveBeenCalledExactlyOnceWith(
-				mocks.source.outputKey,
+			expect(mocks.sign).not.toHaveBeenCalled();
+			expect(response.headers.get("Location")).toBe(
+				"/api/playback/mp4?videoId=recording",
 			);
+		},
+	);
+	it.each([
+		"owner/recording/video/segment_001.ts",
+		"owner/recording/video/abandoned.tmp",
+	])(
+		"characterizes legacy custom HLS listing without publication evidence: %s",
+		async (key) => {
+			mocks.source = { type: "MediaConvert" };
+			mocks.legacyObjects = [{ Key: key, Size: 128 }];
+			mocks.manifest = { is_complete: false, video_segments: [] };
+			const response = await request("video", "");
+			expect(response.status).toBe(200);
+			expect(await response.text()).toContain(
+				`https://media.example.com/${key}`,
+			);
+			expect(mocks.sign).toHaveBeenCalledWith(key);
+			expect(mocks.read).not.toHaveBeenCalled();
 		},
 	);
 });

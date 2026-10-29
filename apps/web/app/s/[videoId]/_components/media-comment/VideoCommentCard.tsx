@@ -62,11 +62,11 @@ export const VideoCommentCard = ({
 	const src =
 		localUrl ??
 		(comment.mediaKey
-			? commentMediaUrl(comment.videoId, comment.mediaKey)
+			? commentMediaUrl(comment.videoId, comment.id)
 			: undefined);
 	const thumbnailKey = comment.mediaMeta?.thumbnailKey;
 	const posterUrl = thumbnailKey
-		? commentMediaUrl(comment.videoId, thumbnailKey)
+		? commentMediaUrl(comment.videoId, comment.id, true)
 		: null;
 
 	const stopPainting = useCallback(

@@ -816,7 +816,7 @@ afterEach(() => {
 
 describe("recording storage lifecycle", () => {
 	it.each(["desktopMP4", "webMP4"] as const)(
-		"uses the published %s thumbnail without discovering older objects",
+		"emits a proxy for the published %s thumbnail without reading storage",
 		async (type) => {
 			const editThumbnail = `${prefix}.recording/outputs/edit-11111111-1111-4111-8111-111111111111/thumbnail.jpg`;
 			databaseFixture(recording({ type, thumbnailKey: editThumbnail }));
@@ -832,7 +832,10 @@ describe("recording storage lifecycle", () => {
 					Effect.provideService(CurrentUser, currentUser),
 				),
 			);
-			expect(Option.getOrNull(thumbnail)).toContain(editThumbnail);
+			expect(Option.getOrNull(thumbnail)).toBe(
+				`/api/playback/resource?videoId=${videoId}&resource=thumbnail`,
+			);
+			expect(storage.requests).toEqual([]);
 			expect(
 				storage.requests.filter(({ operation }) => operation === "list"),
 			).toEqual([]);
@@ -916,7 +919,9 @@ describe("recording storage lifecycle", () => {
 		expect(database.rows.get("duplicate-video")).toMatchObject({
 			source: { type: "desktopMP4" },
 			metadata: { sourceName: "Test display" },
+			public: false,
 		});
+		expect(database.rows.get("owned-video")?.public).toBe(true);
 		expect(database.rows.get("duplicate-video")?.metadata).not.toHaveProperty(
 			"desktopRecordingUpload",
 		);
